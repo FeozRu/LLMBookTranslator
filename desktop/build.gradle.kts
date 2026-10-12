@@ -17,6 +17,17 @@ java {
     targetCompatibility = JavaVersion.VERSION_21
 }
 
+// Версия — из gradle.properties (единственный источник; -Pversion=N.N.N переопределяет с CLI)
+version = providers.gradleProperty("version").getOrElse("0.0.0")
+
+// Версия внутри приложения: version.properties собирается с подстановкой appVersion,
+// читается в Main.kt (заголовок окна)
+tasks.processResources {
+    filesMatching("version.properties") {
+        expand("appVersion" to version.toString())
+    }
+}
+
 dependencies {
     implementation(project(":core"))
     implementation(compose.desktop.currentOs)
@@ -43,7 +54,8 @@ compose.desktop {
         nativeDistributions {
             targetFormats(TargetFormat.Msi, TargetFormat.Deb, TargetFormat.Rpm)
             packageName = "BookTranslator"
-            packageVersion = "0.1.0"
+            // Версия из gradle.properties (строго N.N.N — ограничение jpackage для MSI)
+            packageVersion = version.toString()
             description = "Конвейер перевода книг: черновик → редактура → корректор → сборка EPUB/FB2"
             vendor = "sebyanin"
 

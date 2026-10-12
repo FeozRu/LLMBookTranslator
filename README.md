@@ -84,10 +84,39 @@ projects/<слаг>/project.json, glossary.json, notes.json, conventions.md, pro
 
 Подключение к ZCode — см. [docs/MCP.md](docs/MCP.md).
 
-## Сборка дистрибутива
+## Версии и релизы
+
+Версия живёт в одном месте — `gradle.properties` (`version=N.N.N`, формат строго
+`N.N.N` — ограничение jpackage для MSI). Она же попадает в заголовок окна.
+
+Релиз собирается GitHub Actions (`.github/workflows/release.yml`) и триггерится
+**только сменой версии**: пуш в master сверяет `version` с тегом `v<версия>` —
+если тег уже существует, сборка не запускается вовсе; если версия новая — на
+обоих раннерах собираются дистрибутивы и публикуется GitHub Release с тегом
+`v<версия>` и готовыми файлами:
+
+- `BookTranslator-<v>-windows-x64.msi` — установщик Windows;
+- `BookTranslator-<v>-windows-portable.zip` — распаковать и запустить `BookTranslator.exe`;
+- `BookTranslator-<v>-linux-amd64.deb` — пакет Debian/Ubuntu;
+- `BookTranslator-<v>-linux-portable.zip` — распаковать и запустить `bin/BookTranslator`
+  (свой JRE внутри, на NixOS работает как есть).
+
+Как выпустить новую версию:
+
+```bash
+# 1. Поднять версию в gradle.properties, например 0.1.0 → 0.1.1
+# 2. Закоммитить и запушить в master — дальше CI всё сделает сам
+```
+
+Release notes генерируются автоматически (список коммитов с прошлого тега).
+Ручной запуск воркфлоу (`workflow_dispatch`) с галкой «force» пересобирает
+текущую версию даже без смены версии.
+
+Локально всё то же самое можно собрать руками:
 
 ```bash
 gradlew :desktop:packageDistributionForCurrentOS   # MSI на Windows, deb/rpm на Linux
+gradlew :desktop:createDistributable               # portable-папка (desktop/build/compose/binaries/main/app)
 ```
 
 ## Структура кода

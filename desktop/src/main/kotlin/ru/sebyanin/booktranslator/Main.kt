@@ -102,6 +102,22 @@ private fun pollShowingWindow(timeoutMillis: Long): java.awt.Window? {
     return null
 }
 
+/**
+ * Версия приложения из ресурсов (version.properties заполняется Gradle'ом
+ * из gradle.properties — единственного источника версии). «dev» — запуск без сборки.
+ */
+private fun loadAppVersion(): String {
+    val stream = ClassLoader.getSystemResourceAsStream("version.properties") ?: return "dev"
+    return try {
+        stream.use {
+            java.util.Properties().apply { load(it) }
+                .getProperty("appVersion")?.takeIf { v -> v.isNotBlank() }
+        } ?: "dev"
+    } catch (_: Exception) {
+        "dev"
+    }
+}
+
 fun main() = application {
     startAutoShot()
     val services = remember { AppServices.create() }
@@ -131,7 +147,7 @@ fun main() = application {
 
     Window(
         onCloseRequest = ::exitApplication,
-        title = "Переводчик книг",
+        title = "Переводчик книг ${remember { loadAppVersion() }}",
         icon = remember { loadAppIcon() },
         // rememberWindowState: состояние (вкл. максимизацию) переживает рекомпозиции
         state = rememberWindowState(width = if (mockups) 1180.dp else 1440.dp, height = 860.dp),

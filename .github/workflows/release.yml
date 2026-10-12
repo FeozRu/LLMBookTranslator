@@ -1,0 +1,154 @@
+# Релизы по версии. Триггер — смена `version` в gradle.properties (единственный
+# источник версии): пуш в master сверяет её с тегом v<версия> — тег уже есть,
+# значит релиз этой версии собран, и сборка не запускается вовсе.
+# Результат: GitHub Release v<версия> с MSI (Windows), deb (Linux) и
+# portable-архивами (распаковал — и запускается, свой рантайм внутри).
+name: release
+
+on:
+  push:
+    branches: [master]
+  workflow_dispatch:
+    inputs:
+      force:
+        description: 'Пересобрать, даже если версия не менялась'
+        type: boolean
+        default: false
+
+# тег v<версия> и GitHub Release
+permissions:
+  contents: write
+
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+jobs:
+  # ── 1. Нужна ли сборка: версия из gradle.properties vs существующие теги ──
+  version-check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    outputs:
+      version: ${{ steps.check.outputs.version }}
+      should_build: ${{ steps.check.outputs.should_build }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0   # нужны теги для сравнения
+      - id: check
+        shell: bash
+        run: |
+          VERSION=$(sed -n 's/^version[[:space:]]*=[[:space:]]*//p' gradle.properties | head -1 | tr -d '\r ')
+          echo "Версия в gradle.properties: '$VERSION'"
+          if ! grep -qE '^[0-9]+\.[0-9]+\.[0-9]+$' <<< "$VERSION"; then
+            echo "::error::version='$VERSION' — ожидается формат N.N.N (ограничение jpackage для MSI)"
+            exit 1
+          fi
+          FORCE="${{ inputs.force || false }}"
+          if [ "$FORCE" = "true" ]; then
+            echo "Ручной запуск с force — собираем независимо от тега"
+            should=true
+          elif git rev-parse -q --verify "refs/tags/v$VERSION" >/dev/null; then
+            echo "Тег v$VERSION уже существует — версия не менялась, сборка не нужна"
+            should=false
+          else
+            echo "Новая версия $VERSION — собираем"
+            should=true
+          fi
+          {
+            echo "version=$VERSION"
+            echo "should_build=$should"
+          } >> "$GITHUB_OUTPUT"
+
+  # ── 2. Сборка дистрибутивов на обеих целевых платформах ──
+  build:
+    needs: version-check
+    if: needs.version-check.outputs.should_build == 'true'
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest   # MSI + portable zip
+          - os: ubuntu-latest    # deb + portable zip (+ тесты до сборки)
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 21
+
+      - uses: gradle/actions/setup-gradle@v4
+
+      # На свежих образах раннеров WiX нет, а без него jpackage не соберёт MSI
+      - name: Установить WiX (для MSI)
+        if: runner.os == 'Windows'
+        run: choco install wixtoolset -y --no-progress
+
+      - name: Тесты
+        if: runner.os == 'Linux'
+        run: ./gradlew test
+
+      - name: Сборка дистрибутивов (Windows)
+        if: runner.os == 'Windows'
+        run: .\gradlew.bat :desktop:packageMsi :desktop:createDistributable
+
+      - name: Сборка дистрибутивов (Linux)
+        if: runner.os == 'Linux'
+        run: ./gradlew :desktop:packageDeb :desktop:createDistributable
+
+      # Пути вывода Compose Desktop: desktop/build/compose/binaries/main/{msi,deb,app}
+      - name: Упаковать артефакты (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $v = "${{ needs.version-check.outputs.version }}"
+          New-Item -ItemType Directory -Force dist | Out-Null
+          Get-ChildItem "desktop/build/compose/binaries/main/msi" -Filter *.msi | ForEach-Object {
+            Copy-Item $_.FullName "dist/BookTranslator-$v-windows-x64.msi"
+          }
+          $appImage = Get-ChildItem "desktop/build/compose/binaries/main/app" -Directory | Select-Object -First 1
+          Compress-Archive -Path "$($appImage.FullName)/*" -DestinationPath "dist/BookTranslator-$v-windows-portable.zip"
+
+      - name: Упаковать артефакты (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          v="${{ needs.version-check.outputs.version }}"
+          mkdir -p dist
+          cp desktop/build/compose/binaries/main/deb/*.deb "dist/BookTranslator-$v-linux-amd64.deb"
+          app_image=$(find desktop/build/compose/binaries/main/app -mindepth 1 -maxdepth 1 -type d | head -1)
+          (cd "$app_image" && zip -qr "$OLDPWD/dist/BookTranslator-$v-linux-portable.zip" .)
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dist-${{ matrix.os }}
+          path: dist/
+          if-no-files-found: error
+
+  # ── 3. GitHub Release с готовыми файлами ──
+  release:
+    needs: [version-check, build]
+    if: needs.version-check.outputs.should_build == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+      - name: Создать релиз v${{ needs.version-check.outputs.version }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          v="${{ needs.version-check.outputs.version }}"
+          if gh release view "v$v" >/dev/null 2>&1; then
+            echo "Релиз v$v уже существует — пропускаю (артефакты предыдущей сборки не трогаю)"
+            exit 0
+          fi
+          gh release create "v$v" \
+            --target "$GITHUB_SHA" \
+            --title "v$v" \
+            --generate-notes \
+            dist/*
