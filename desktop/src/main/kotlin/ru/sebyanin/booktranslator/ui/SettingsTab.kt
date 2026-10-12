@@ -1,27 +1,41 @@
 package ru.sebyanin.booktranslator.ui
 
+import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.interaction.MutableInteractionSource
+import androidx.compose.foundation.interaction.collectIsHoveredAsState
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
-import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
+import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableFloatStateOf
+import androidx.compose.runtime.mutableStateMapOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.layout.onGloballyPositioned
+import androidx.compose.ui.layout.positionInWindow
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -41,28 +55,33 @@ import ru.sebyanin.booktranslator.ui.settings.FieldRow
 import ru.sebyanin.booktranslator.ui.settings.FieldSpec
 import ru.sebyanin.booktranslator.ui.theme.BtPalette
 import java.nio.file.Files
+import kotlin.math.roundToInt
+
+/** Ширина колонки навигации по разделам. */
+private val SettingsNavWidth = 200.dp
 
 /**
- * Вкладка «Настройки» центральной зоны (после Журнала): глобальные и проектные
- * настройки. Переехала из правой панели — там на 340dp ей было тесно, особенно
- * с прицелом на расширение. Контент ограничен 820dp и центрирован (как стартовые
- * экраны): на узком окне занимает всю ширину центра, на широком не растягивается.
+ * Раздел настроек: короткая подпись для навигации + контент. Контент первым
+ * ребёнком рисует свой SectionCaption (у «Промптов проекта» он с текущей ролью).
+ */
+private data class SettingsSection(val navLabel: String, val content: @Composable () -> Unit)
+
+/**
+ * Вкладка «Настройки»: слева — навигация по разделам, справа — контент.
+ * Контент занимает всю доступную ширину (на фуллскрине растягивается, в окне
+ * сужается сам). Разделы в контенте разделены линиями-разделителями; разделитель,
+ * последним пересёкший верхний край области контента, определяет активный пункт
+ * навигации; клик по пункту приводит разделитель раздела к верхнему краю
+ * (последние разделы — насколько позволяет прокрутка, т.е. к низу страницы).
  */
 @Composable
 fun SettingsTab(state: AppState, modifier: Modifier = Modifier) {
     val services = state.services
     val settings by services.settings.collectAsState()
-    val project by state.currentProject.collectAsState()
+    val project = state.currentProject.collectAsState().value
 
-    Column(modifier.padding(12.dp)) {
-        Column(
-            modifier = Modifier
-                .widthIn(max = 820.dp)
-                .align(Alignment.CenterHorizontally)
-                .verticalScroll(rememberScrollState()),
-            verticalArrangement = Arrangement.spacedBy(16.dp),
-        ) {
-            // Внешний вид
+    val sections = listOf(
+        SettingsSection("Внешний вид") {
             SectionCaption("ВНЕШНИЙ ВИД")
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Text("Тема", fontSize = 13.sp, modifier = Modifier.weight(1f))
@@ -86,13 +105,16 @@ fun SettingsTab(state: AppState, modifier: Modifier = Modifier) {
                     },
                 )
             }
-
-            // Профили LLM
+        },
+        SettingsSection("Профили LLM") {
             SectionCaption("ПРОФИЛИ LLM")
             ProfilesSection(state, services, settings)
+        },
+        SettingsSection("Роли → профиль") {
+            SectionCaption("РОЛИ → ПРОФИЛЬ")
             RolesSection(services, settings)
-
-            // Конвейер
+        },
+        SettingsSection("Конвейер") {
             SectionCaption("КОНВЕЙЕР")
             FieldRow(
                 listOf(
@@ -120,8 +142,8 @@ fun SettingsTab(state: AppState, modifier: Modifier = Modifier) {
                 fontSize = 12.sp,
                 color = BtPalette.TextSecondary,
             )
-
-            // MCP
+        },
+        SettingsSection("MCP") {
             SectionCaption("MCP (ВНЕШНЕЕ УПРАВЛЕНИЕ, НАПРИМЕР ZCODE)")
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Text("Сервер", fontSize = 13.sp, modifier = Modifier.weight(1f))
@@ -150,13 +172,130 @@ fun SettingsTab(state: AppState, modifier: Modifier = Modifier) {
                 fontSize = 12.sp,
                 color = BtPalette.TextSecondary,
             )
+        },
+    ) + if (project != null) {
+        listOf(
+            SettingsSection("Конвенции проекта") {
+                ProjectConventionsSection(state, services, project)
+            },
+            SettingsSection("Промпты проекта") {
+                ProjectPromptsSection(state, services, project)
+            },
+        )
+    } else {
+        emptyList()
+    }
 
-            // Проект: конвенции и промпты
-            if (project != null) {
-                ProjectKnowledgeSection(state, services, project!!)
+    val scrollState = rememberScrollState()
+    // Отладка для bt.shot: -Dbt.settingsScroll=<px> — стартовая прокрутка контента настроек
+    System.getProperty("bt.settingsScroll")?.toIntOrNull()?.let { seed ->
+        LaunchedEffect(Unit) { scrollState.scrollTo(seed) }
+    }
+    val scope = rememberCoroutineScope()
+    // Верх контентной области в оконных координатах (не меняется при прокрутке)
+    val contentTop = remember { mutableFloatStateOf(0f) }
+    // Верх каждого раздела в оконных координатах (меняется при прокрутке)
+    val sectionTops = remember { mutableStateMapOf<Int, Float>() }
+    val activeThresholdPx = with(LocalDensity.current) { 48.dp.toPx() }
+    val sectionCount = sections.size
+
+    // Активен раздел, чей разделитель последним пересёк верхний край контента
+    // (с небольшим допуском); в самом низу страницы активен последний раздел.
+    val activeSection by remember(sectionCount) {
+        derivedStateOf {
+            var active = 0
+            for (i in 0 until sectionCount) {
+                val top = sectionTops[i] ?: continue
+                if (top - contentTop.floatValue <= activeThresholdPx) active = i
             }
-            Spacer(Modifier.height(8.dp))
+            if (scrollState.maxValue > 0 && scrollState.value >= scrollState.maxValue) sectionCount - 1 else active
         }
+    }
+
+    fun scrollToSection(index: Int) {
+        scope.launch {
+            val top = sectionTops[index] ?: return@launch
+            val target = scrollState.value + (top - contentTop.floatValue).roundToInt()
+            scrollState.animateScrollTo(target.coerceIn(0, scrollState.maxValue))
+        }
+    }
+
+    Row(modifier) {
+        Column(
+            Modifier
+                .width(SettingsNavWidth)
+                .fillMaxHeight()
+                .verticalScroll(rememberScrollState())
+                .padding(start = 10.dp, end = 6.dp, top = 10.dp, bottom = 12.dp),
+            verticalArrangement = Arrangement.spacedBy(2.dp),
+        ) {
+            SectionCaption("РАЗДЕЛЫ", Modifier.padding(start = 10.dp, bottom = 4.dp), color = BtPalette.Muted)
+            sections.forEachIndexed { index, section ->
+                SettingsNavItem(
+                    section.navLabel,
+                    active = index == activeSection,
+                    onClick = { scrollToSection(index) },
+                )
+            }
+        }
+        Box(Modifier.fillMaxHeight().width(1.dp).background(BtPalette.Border))
+        Column(
+            Modifier
+                .weight(1f)
+                .fillMaxHeight()
+                .onGloballyPositioned { contentTop.floatValue = it.positionInWindow().y }
+                .verticalScroll(scrollState)
+                .padding(PaddingValues(start = 20.dp, end = 20.dp, top = 10.dp, bottom = 28.dp)),
+            verticalArrangement = Arrangement.spacedBy(16.dp),
+        ) {
+            sections.forEachIndexed { index, section ->
+                // Обёртка секции: её верх = разделитель (для второго и далее) —
+                // эта точка и есть «место раздела» и для навигации, и для прыжка
+                Column(
+                    Modifier
+                        .fillMaxWidth()
+                        .onGloballyPositioned { sectionTops[index] = it.positionInWindow().y },
+                    verticalArrangement = Arrangement.spacedBy(12.dp),
+                ) {
+                    if (index > 0) Box(Modifier.fillMaxWidth().height(1.dp).background(BtPalette.Border))
+                    section.content()
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun SettingsNavItem(label: String, active: Boolean, onClick: () -> Unit, modifier: Modifier = Modifier) {
+    val shape = RoundedCornerShape(6.dp)
+    val interaction = remember { MutableInteractionSource() }
+    val hovered by interaction.collectIsHoveredAsState()
+    Row(
+        modifier
+            .fillMaxWidth()
+            .background(
+                when {
+                    active -> BtPalette.AccentBgSoft
+                    hovered -> BtPalette.Hover
+                    else -> Color.Transparent
+                },
+                shape,
+            )
+            .clickable(interactionSource = interaction, indication = null, onClick = onClick)
+            .padding(horizontal = 10.dp, vertical = 7.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Text(
+            label,
+            fontSize = 13.sp,
+            maxLines = 1,
+            fontWeight = if (active) FontWeight.SemiBold else FontWeight.Normal,
+            color = when {
+                active -> BtPalette.AccentText
+                hovered -> BtPalette.Text
+                else -> BtPalette.TextSecondary
+            },
+        )
     }
 }
 
@@ -263,7 +402,6 @@ private fun ProfilesSection(state: AppState, services: ru.sebyanin.booktranslato
 private fun RolesSection(services: ru.sebyanin.booktranslator.core.AppServices, settings: AppSettings) {
     val profileNames = settings.profiles.map { it.name }
     Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
-        SectionCaption("РОЛИ → ПРОФИЛЬ")
         AgentRole.entries.forEach { role ->
             Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.padding(top = 4.dp)) {
                 Column(Modifier.weight(1f)) {
@@ -292,11 +430,12 @@ private fun RolesSection(services: ru.sebyanin.booktranslator.core.AppServices, 
 }
 
 @Composable
-private fun ProjectKnowledgeSection(state: AppState, services: ru.sebyanin.booktranslator.core.AppServices, project: ru.sebyanin.booktranslator.core.model.ProjectMeta) {
+private fun ProjectConventionsSection(
+    state: AppState,
+    services: ru.sebyanin.booktranslator.core.AppServices,
+    project: ru.sebyanin.booktranslator.core.model.ProjectMeta,
+) {
     var conventions by remember(project.slug) { mutableStateOf(services.projectStore.readConventions(project.slug)) }
-    var role by remember { mutableStateOf(AgentRole.DRAFT) }
-    var promptText by remember(project.slug, role) { mutableStateOf(services.promptStore.resolve(project.slug, role)) }
-    var showBrief by remember { mutableStateOf(false) }
 
     SectionCaption("КОНВЕНЦИИ ПРОЕКТА (В КАЖДЫЙ БРИФ)")
     BtTextArea(conventions.replace("\r", ""), { conventions = it }, Modifier.fillMaxWidth(), minHeight = 140.dp)
@@ -307,6 +446,17 @@ private fun ProjectKnowledgeSection(state: AppState, services: ru.sebyanin.bookt
             state.message.value = "Конвенции сохранены"
         })
     }
+}
+
+@Composable
+private fun ProjectPromptsSection(
+    state: AppState,
+    services: ru.sebyanin.booktranslator.core.AppServices,
+    project: ru.sebyanin.booktranslator.core.model.ProjectMeta,
+) {
+    var role by remember { mutableStateOf(AgentRole.DRAFT) }
+    var promptText by remember(project.slug, role) { mutableStateOf(services.promptStore.resolve(project.slug, role)) }
+    var showBrief by remember { mutableStateOf(false) }
 
     SectionCaption("ПРОМПТЫ ПРОЕКТА (РОЛЬ: ${role.title.uppercase()})")
     Row(
