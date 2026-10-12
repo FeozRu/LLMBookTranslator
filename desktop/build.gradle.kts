@@ -66,6 +66,13 @@ compose.desktop {
             windows {
                 menu = true
                 dirChooser = true
+                // Иначе jpackage кладёт дефолтную котлиновскую иконку в EXE/ярлыки.
+                // ICO обязателен (PNG не примет), кадры 16–256 в desktop/icon.ico
+                iconFile = file("icon.ico")
+            }
+
+            linux {
+                iconFile = file("src/main/resources/icon.png")
             }
         }
     }
