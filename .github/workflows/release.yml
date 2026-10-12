@@ -155,39 +155,60 @@ jobs:
           GH_REPO: ${{ github.repository }}
         run: |
           v="${{ needs.version-check.outputs.version }}"
-          if gh release view "v$v" >/dev/null 2>&1; then
-            echo "Релиз v$v уже существует — пропускаю (артефакты предыдущей сборки не трогаю)"
+          dist_files=$(ls dist 2>/dev/null | wc -l)
+          echo "Артефактов для загрузки: $dist_files"
+
+          # Опубликованный релиз — эталон, его не трогаем
+          if [ "$(gh release view "v$v" --json isDraft --jq '.isDraft' 2>/dev/null)" = "false" ]; then
+            echo "Релиз v$v уже опубликован — пропускаю"
             exit 0
           fi
 
-          # HTTP 5xx у GitHub API бывают мимолётными (бывали на POST /releases) —
-          # повторяем; если попытка упала, а релиз всё же создался, считаем успехом
-          created=false
+          # Черновик — машинный остаток прошлой попытки (gh при create с ассетами
+          # держит релиз черновиком до конца загрузки; сбой посреди оставляет
+          # осиротевший черновик БЕЗ тега — тег создаётся только публикацией).
+          # Сносим и начинаем чисто, с правильным target.
+          if gh release view "v$v" >/dev/null 2>&1; then
+            echo "Найден черновик v$v от прошлой попытки — сношу и пересоздаю"
+            gh release delete "v$v" --yes
+          fi
+
+          # 1. Черновик. HTTP 5xx у GitHub API бывают мимолётными — ретраи.
           for attempt in 1 2 3; do
-            if gh release create "v$v" --target "$GITHUB_SHA" --title "v$v" --generate-notes; then
-              created=true; break
+            if gh release create "v$v" --draft --target "$GITHUB_SHA" --title "v$v" --generate-notes; then
+              break
             fi
-            if gh release view "v$v" >/dev/null 2>&1; then
-              echo "Релиз создался, несмотря на ошибку попытки $attempt"; created=true; break
-            fi
-            [ "$attempt" = 3 ] && break
-            echo "Создание, попытка $attempt не удалась (похоже, мимолётный 5xx API) — повтор через 15 с"
+            [ "$attempt" = 3 ] && { echo "::error::Черновик v$v не создан за 3 попытки"; exit 1; }
+            echo "Создание, попытка $attempt не удалась — повтор через 15 с"
             sleep 15
           done
-          if [ "$created" != "true" ]; then
-            echo "::error::Релиз v$v не создан за 3 попытки"
+
+          # 2. Артефакты в черновик (сбой загрузки не создаёт тега — повтор досылает)
+          for attempt in 1 2 3; do
+            if gh release upload "v$v" dist/* --clobber; then
+              break
+            fi
+            [ "$attempt" = 3 ] && { echo "::error::Артефакты v$v не загружены за 3 попытки"; exit 1; }
+            echo "Загрузка, попытка $attempt не удалась — повтор через 15 с"
+            sleep 15
+          done
+
+          # 3. Публикуем только то, что реально загрузилось
+          uploaded=$(gh release view "v$v" --json assets --jq '.assets | length')
+          if [ "$uploaded" != "$dist_files" ]; then
+            echo "::error::На релизе $uploaded артефактов из $dist_files — публиковать нельзя"
             exit 1
           fi
 
-          # Артефакты грузим ОТДЕЛЬНО от создания: их сбой не роняет релиз,
-          # а повтор досыливает недогруженное (--clobber перезаписывает частичное)
+          # 4. Публикация — только теперь создаётся тег v<версия>
           for attempt in 1 2 3; do
-            if gh release upload "v$v" dist/* --clobber; then
+            if gh release edit "v$v" --draft=false; then
+              echo "Релиз v$v опубликован ($uploaded артефактов)"
               exit 0
             fi
             [ "$attempt" = 3 ] && break
-            echo "Загрузка артефактов, попытка $attempt не удалась — повтор через 15 с"
+            echo "Публикация, попытка $attempt не удалась — повтор через 15 с"
             sleep 15
           done
-          echo "::error::Артефакты v$v не загружены за 3 попытки"
+          echo "::error::Релиз v$v не опубликован за 3 попытки; черновик с артефактами остался — следующий запуск добьёт"
           exit 1
