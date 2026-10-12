@@ -150,6 +150,9 @@ jobs:
       - name: Создать релиз v${{ needs.version-check.outputs.version }}
         env:
           GH_TOKEN: ${{ github.token }}
+          # Джоба без checkout: gh обычно узнаёт репозиторий из локального git,
+          # без него нужен явный GH_REPO, иначе «fatal: not a git repository»
+          GH_REPO: ${{ github.repository }}
         run: |
           v="${{ needs.version-check.outputs.version }}"
           if gh release view "v$v" >/dev/null 2>&1; then
