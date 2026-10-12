@@ -1,0 +1,17 @@
+.gradle/
+build/
+out/
+*.log
+.idea/
+*.iml
+.kotlin/
+desktop/build/
+core/build/
+
+# ===== Не для публикации: локальные артефакты и приватные материалы =====
+.bt-shots/
+.zcode/
+.zcodeignore
+info_from_past/
+design_by_claude/
+docs/task-glossary-revisor.md
