@@ -56,7 +56,11 @@ compose.desktop {
             packageName = "BookTranslator"
             // Версия из gradle.properties (строго N.N.N — ограничение jpackage для MSI)
             packageVersion = version.toString()
-            description = "Конвейер перевода книг: черновик → редактура → корректор → сборка EPUB/FB2"
+            // ТОЛЬКО ASCII: метаданные MSI пишутся в системной кодовой странице
+            // (на CI-раннерах cp1252, в России cp1251) — кириллица и особенно стрелки
+            // «→» не представимы там и роняют WiX light.exe (exit 311). Проверено:
+            // русское описание ломает packageMsi и локально, и на CI.
+            description = "Book translation pipeline: draft, edit, critic, EPUB/FB2 assembly"
             vendor = "sebyanin"
 
             windows {
