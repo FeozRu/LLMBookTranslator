@@ -16,7 +16,7 @@ data class AgentResult(
  * (in-process, read-only), возвращает финальный текст. Лимиты — страховка
  * от зацикливания; каждый вызов инструмента пишется в журнал.
  */
-class AgentRunner(private val client: OpenAiCompatClient) {
+class AgentRunner(private val client: LlmClient) {
 
     suspend fun run(
         profile: LlmProfile,
@@ -77,7 +77,9 @@ class AgentRunner(private val client: OpenAiCompatClient) {
                 messages += ApiMessage.user(
                     "Лимит вызовов инструментов исчерпан. Больше не вызывай их — заверши задание с тем, что уже есть.",
                 )
-                val final = client.complete(profile, messages, null)
+                // Спеки инструментов передаём и здесь: Anthropic отклоняет запрос,
+                // у которого в истории tool_use/tool_result, а tools не задан (400).
+                val final = client.complete(profile, messages, tools)
                 promptTokens += final.promptTokens ?: 0
                 completionTokens += final.completionTokens ?: 0
                 return AgentResult(final.content, totalCalls, promptTokens, completionTokens)

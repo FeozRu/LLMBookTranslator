@@ -1,7 +1,7 @@
 package ru.sebyanin.booktranslator.core
 
 import ru.sebyanin.booktranslator.core.glossary.KnowledgeService
-import ru.sebyanin.booktranslator.core.llm.OpenAiCompatClient
+import ru.sebyanin.booktranslator.core.llm.LlmClient
 import ru.sebyanin.booktranslator.core.log.AppLog
 import ru.sebyanin.booktranslator.core.model.AppSettings
 import ru.sebyanin.booktranslator.core.pipeline.DraftStage
@@ -27,7 +27,7 @@ class AppServices private constructor(
     val dataRoot: Path,
     private val store: SettingsStore,
 ) {
-    val llm = OpenAiCompatClient()
+    val llm = LlmClient()
 
     private val _settings = MutableStateFlow(store.load())
     val settings: StateFlow<AppSettings> = _settings.asStateFlow()
@@ -87,7 +87,10 @@ class AppServices private constructor(
         const val APP_DIR_NAME = "BookTranslator"
 
         fun create(): AppServices {
-            val dataRoot = OsDirs.documentsDir().resolve(APP_DIR_NAME)
+            // -Dbt.dataRoot=<путь> — отладочный корень данных (bt.shot-проверки UI
+            // не трогают реальные настройки/проекты пользователя)
+            val dataRoot = System.getProperty("bt.dataRoot")?.trim().takeUnless { it.isNullOrEmpty() }?.let { Path.of(it) }
+                ?: OsDirs.documentsDir().resolve(APP_DIR_NAME)
             Files.createDirectories(dataRoot)
             val services = AppServices(dataRoot, SettingsStore(dataRoot))
             services.promptStore.ensureGlobalDefaults()

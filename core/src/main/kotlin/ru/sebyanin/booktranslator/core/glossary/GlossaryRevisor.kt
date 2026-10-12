@@ -7,7 +7,7 @@ import kotlinx.serialization.json.jsonObject
 import ru.sebyanin.booktranslator.core.glossary.GlossaryRevision.findRedundant
 import ru.sebyanin.booktranslator.core.glossary.GlossaryRevision.findRedundantApproved
 import ru.sebyanin.booktranslator.core.llm.AgentRunner
-import ru.sebyanin.booktranslator.core.llm.OpenAiCompatClient
+import ru.sebyanin.booktranslator.core.llm.LlmClient
 import ru.sebyanin.booktranslator.core.log.AppLog
 import ru.sebyanin.booktranslator.core.model.AgentRole
 import ru.sebyanin.booktranslator.core.model.AppSettings
@@ -39,7 +39,7 @@ class GlossaryRevisor(
     private val store: ProjectStore,
     private val promptStore: PromptStore,
     private val knowledge: KnowledgeService,
-    private val client: OpenAiCompatClient,
+    private val client: LlmClient,
     private val settingsProvider: () -> AppSettings,
 ) {
     private val runner = AgentRunner(client)
@@ -76,7 +76,7 @@ class GlossaryRevisor(
         require(scope == SCOPE_QUEUE || scope == SCOPE_CANON) { "неизвестный скоуп ревизора: $scope" }
         val settings = settingsProvider()
         val profile = settings.profileFor(AgentRole.REVISOR)
-            ?: error("Не настроен профиль LLM для роли «${AgentRole.REVISOR.title}»")
+            ?: error("Не настроена модель LLM для роли «${AgentRole.REVISOR.title}»")
         val glossary = knowledge.glossary(projectSlug)
         // Прогон по очереди предложений (proposed) или по утверждённому канону (approved)
         val targets = glossary.filter { if (scope == SCOPE_CANON) it.isApproved else it.status == "proposed" }

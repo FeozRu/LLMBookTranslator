@@ -1,13 +1,14 @@
 package ru.sebyanin.booktranslator.core
 
 import ru.sebyanin.booktranslator.core.glossary.KnowledgeService
-import ru.sebyanin.booktranslator.core.llm.OpenAiCompatClient
+import ru.sebyanin.booktranslator.core.llm.LlmClient
 import ru.sebyanin.booktranslator.core.model.AppSettings
 import ru.sebyanin.booktranslator.core.model.BookMeta
 import ru.sebyanin.booktranslator.core.model.BookStructure
 import ru.sebyanin.booktranslator.core.model.ChapterMeta
 import ru.sebyanin.booktranslator.core.model.FragmentFile
-import ru.sebyanin.booktranslator.core.model.LlmProfile
+import ru.sebyanin.booktranslator.core.model.LlmModel
+import ru.sebyanin.booktranslator.core.model.LlmProvider
 import ru.sebyanin.booktranslator.core.pipeline.DraftStage
 import ru.sebyanin.booktranslator.core.pipeline.EditStage
 import ru.sebyanin.booktranslator.core.pipeline.SplitStage
@@ -61,13 +62,16 @@ class AnchorFragmentTest {
         val promptStore = PromptStore({ tmp }) { slug -> store.projectDir(slug) }
         val knowledge = KnowledgeService(store)
         val settings = AppSettings(
-            profiles = listOf(
-                LlmProfile(name = "test", baseUrl = "http://127.0.0.1:9/v1", model = "m", requestTimeoutSec = 5),
+            providers = listOf(
+                LlmProvider(name = "127.0.0.1", baseUrl = "http://127.0.0.1:9/v1"),
+            ),
+            models = listOf(
+                LlmModel(name = "test", provider = "127.0.0.1", model = "m", requestTimeoutSec = 5),
             ),
         )
         val srcLines = blocks.map { it.text }
 
-        OpenAiCompatClient().use { client ->
+        LlmClient().use { client ->
             val draftSummary = DraftStage(
                 store, promptStore, knowledge, client, { settings }, { VerifyEngine("ja") },
             ).run(project.slug, book.slug)

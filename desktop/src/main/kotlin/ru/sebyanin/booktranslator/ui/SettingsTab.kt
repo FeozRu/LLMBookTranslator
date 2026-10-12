@@ -42,8 +42,10 @@ import androidx.compose.ui.unit.sp
 import kotlinx.coroutines.launch
 import ru.sebyanin.booktranslator.AppState
 import ru.sebyanin.booktranslator.core.model.AgentRole
+import ru.sebyanin.booktranslator.core.model.ApiKind
 import ru.sebyanin.booktranslator.core.model.AppSettings
-import ru.sebyanin.booktranslator.core.model.LlmProfile
+import ru.sebyanin.booktranslator.core.model.LlmModel
+import ru.sebyanin.booktranslator.core.model.LlmProvider
 import ru.sebyanin.booktranslator.ui.components.BtButton
 import ru.sebyanin.booktranslator.ui.components.BtButtonKind
 import ru.sebyanin.booktranslator.ui.components.BtCard
@@ -106,12 +108,16 @@ fun SettingsTab(state: AppState, modifier: Modifier = Modifier) {
                 )
             }
         },
-        SettingsSection("Профили LLM") {
-            SectionCaption("ПРОФИЛИ LLM")
-            ProfilesSection(state, services, settings)
+        SettingsSection("Провайдеры LLM") {
+            SectionCaption("ПРОВАЙДЕРЫ LLM")
+            ProvidersSection(state, services, settings)
         },
-        SettingsSection("Роли → профиль") {
-            SectionCaption("РОЛИ → ПРОФИЛЬ")
+        SettingsSection("Модели LLM") {
+            SectionCaption("МОДЕЛИ LLM")
+            ModelsSection(services, settings)
+        },
+        SettingsSection("Роли → модель") {
+            SectionCaption("РОЛИ → МОДЕЛЬ")
             RolesSection(services, settings)
         },
         SettingsSection("Конвейер") {
@@ -300,99 +306,195 @@ private fun SettingsNavItem(label: String, active: Boolean, onClick: () -> Unit,
 }
 
 @Composable
-private fun ProfilesSection(state: AppState, services: ru.sebyanin.booktranslator.core.AppServices, settings: AppSettings) {
-    val scope = rememberCoroutineScope()
-    var testing by remember { mutableStateOf<String?>(null) }
-    var results by remember { mutableStateOf(mapOf<String, String>()) }
-
+private fun ProvidersSection(state: AppState, services: ru.sebyanin.booktranslator.core.AppServices, settings: AppSettings) {
+    Text(
+        "Провайдер — адрес, ключ и протокол API. Модели ссылаются на провайдера: токен вводится один раз на любое число моделей.",
+        fontSize = 12.sp,
+        color = BtPalette.TextSecondary,
+    )
     Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
-        settings.profiles.forEachIndexed { index, profile ->
+        settings.providers.forEachIndexed { index, provider ->
             BtCard {
                 Column(Modifier.padding(4.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
                     Row(verticalAlignment = Alignment.CenterVertically) {
-                        Text(profile.name, fontSize = 14.sp, fontWeight = FontWeight.SemiBold, modifier = Modifier.weight(1f))
+                        Text(provider.name, fontSize = 14.sp, fontWeight = FontWeight.SemiBold, modifier = Modifier.weight(1f))
                         BtButton("Дублировать", height = 26.dp, onClick = {
                             services.updateSettings { s ->
-                                s.copy(profiles = s.profiles + profile.copy(name = profile.name + " (копия)"))
+                                s.copy(providers = s.providers + provider.copy(name = provider.name + " (копия)"))
+                            }
+                        })
+                        Spacer(Modifier.width(6.dp))
+                        BtButton("Удалить", height = 26.dp, onClick = {
+                            val usedBy = settings.models.filter { it.provider == provider.name }.map { it.name }
+                            if (usedBy.isNotEmpty()) {
+                                state.message.value =
+                                    "Провайдер «${provider.name}» используют модели: ${usedBy.joinToString(", ")}. Сначала переназначьте или удалите их."
+                            } else {
+                                services.updateSettings { s ->
+                                    s.copy(providers = s.providers.filterIndexed { i, _ -> i != index })
+                                }
+                            }
+                        })
+                    }
+                    FieldRow(
+                        listOf(
+                            FieldSpec("Название", provider.name, placeholder = "", weight = 1f) { v ->
+                                services.updateSettings { s ->
+                                    s.copy(providers = s.providers.toMutableList().also { it[index] = provider.copy(name = v) })
+                                }
+                            },
+                        ),
+                    )
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Text("Протокол", fontSize = 13.sp, modifier = Modifier.weight(1f))
+                        BtDropdown(
+                            options = listOf("OpenAI-совместимый", "Anthropic (Messages)"),
+                            selected = if (provider.api == ApiKind.ANTHROPIC) "Anthropic (Messages)" else "OpenAI-совместимый",
+                            onSelect = { sel ->
+                                services.updateSettings { s ->
+                                    s.copy(
+                                        providers = s.providers.toMutableList().also {
+                                            it[index] = provider.copy(api = if ((sel ?: "").startsWith("Anthropic")) ApiKind.ANTHROPIC else ApiKind.OPENAI)
+                                        },
+                                    )
+                                }
+                            },
+                        )
+                    }
+                    FieldAbove(
+                        "Base URL (префикс до эндпоинта вызова)",
+                        provider.baseUrl,
+                        Modifier.fillMaxWidth(),
+                        placeholder = if (provider.api == ApiKind.ANTHROPIC) "https://api.anthropic.com/v1" else "https://api.deepseek.com/v1",
+                    ) { v ->
+                        services.updateSettings { s ->
+                            s.copy(providers = s.providers.toMutableList().also { it[index] = provider.copy(baseUrl = v.trim()) })
+                        }
+                    }
+                    FieldAbove("API-ключ", provider.apiKey, Modifier.fillMaxWidth(), placeholder = "sk-…") { v ->
+                        services.updateSettings { s ->
+                            s.copy(providers = s.providers.toMutableList().also { it[index] = provider.copy(apiKey = v.trim()) })
+                        }
+                    }
+                    if (provider.baseUrl.isNotBlank()) {
+                        val endpoint = provider.baseUrl.trim().trimEnd('/') +
+                            if (provider.api == ApiKind.ANTHROPIC) "/messages" else "/chat/completions"
+                        Text("Вызовы: $endpoint", fontSize = 11.sp, color = BtPalette.Muted)
+                    }
+                }
+            }
+        }
+        BtButton("+ Добавить провайдера", height = 30.dp, onClick = {
+            services.updateSettings { s ->
+                s.copy(providers = s.providers + LlmProvider(name = "Провайдер ${s.providers.size + 1}", baseUrl = ""))
+            }
+        })
+    }
+}
+
+@Composable
+private fun ModelsSection(services: ru.sebyanin.booktranslator.core.AppServices, settings: AppSettings) {
+    val scope = rememberCoroutineScope()
+    var testing by remember { mutableStateOf<String?>(null) }
+    var results by remember { mutableStateOf(mapOf<String, String>()) }
+    val providerNames = settings.providers.map { it.name }
+
+    Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+        settings.models.forEachIndexed { index, model ->
+            val providerCfg = settings.providers.firstOrNull { it.name == model.provider }
+            BtCard {
+                Column(Modifier.padding(4.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Text(model.name, fontSize = 14.sp, fontWeight = FontWeight.SemiBold, modifier = Modifier.weight(1f))
+                        BtButton("Дублировать", height = 26.dp, onClick = {
+                            services.updateSettings { s ->
+                                s.copy(models = s.models + model.copy(name = model.name + " (копия)"))
                             }
                         })
                         Spacer(Modifier.width(6.dp))
                         BtButton("Удалить", height = 26.dp, onClick = {
                             services.updateSettings { s ->
-                                val removed = s.profiles.toMutableList().also { it.removeAt(index) }
-                                s.copy(profiles = removed, roleBindings = s.roleBindings.filterValues { name -> removed.any { it.name == name } })
+                                val removed = s.models.toMutableList().also { it.removeAt(index) }
+                                s.copy(models = removed, roleBindings = s.roleBindings.filterValues { name -> removed.any { it.name == name } })
                             }
                         })
                     }
                     FieldRow(
                         listOf(
-                            FieldSpec("Название", profile.name, placeholder = "", weight = 1f) { v ->
+                            FieldSpec("Название", model.name, placeholder = "", weight = 1f) { v ->
                                 services.updateSettings { s ->
-                                    s.copy(profiles = s.profiles.toMutableList().also { it[index] = profile.copy(name = v) })
+                                    s.copy(models = s.models.toMutableList().also { it[index] = model.copy(name = v) })
                                 }
                             },
-                            FieldSpec("Модель", profile.model, placeholder = "deepseek-flash…", weight = 1f) { v ->
+                            FieldSpec("Модель (id в API)", model.model, placeholder = "claude-sonnet-5-5…", weight = 1f) { v ->
                                 services.updateSettings { s ->
-                                    s.copy(profiles = s.profiles.toMutableList().also { it[index] = profile.copy(model = v.trim()) })
+                                    s.copy(models = s.models.toMutableList().also { it[index] = model.copy(model = v.trim()) })
                                 }
                             },
                         ),
                     )
-                    FieldAbove("Base URL (до /chat/completions)", profile.baseUrl, Modifier.fillMaxWidth(), placeholder = "https://api.deepseek.com/v1") { v ->
-                        services.updateSettings { s ->
-                            s.copy(profiles = s.profiles.toMutableList().also { it[index] = profile.copy(baseUrl = v.trim()) })
-                        }
-                    }
-                    FieldAbove("API-ключ", profile.apiKey, Modifier.fillMaxWidth(), placeholder = "sk-…") { v ->
-                        services.updateSettings { s ->
-                            s.copy(profiles = s.profiles.toMutableList().also { it[index] = profile.copy(apiKey = v.trim()) })
-                        }
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Text("Провайдер", fontSize = 13.sp, modifier = Modifier.weight(1f))
+                        BtDropdown(
+                            options = providerNames,
+                            selected = model.provider,
+                            onSelect = { selected ->
+                                services.updateSettings { s ->
+                                    s.copy(models = s.models.toMutableList().also { it[index] = model.copy(provider = selected.orEmpty()) })
+                                }
+                            },
+                            placeholder = "— не выбран —",
+                            allowEmpty = true,
+                        )
                     }
                     FieldRow(
                         listOf(
-                            FieldSpec("Температура", profile.temperature.toString(), weight = 1f) { v ->
+                            FieldSpec("Температура", model.temperature.toString(), weight = 1f) { v ->
                                 v.toDoubleOrNull()?.let { d ->
-                                    services.updateSettings { s -> s.copy(profiles = s.profiles.toMutableList().also { it[index] = profile.copy(temperature = d) }) }
+                                    services.updateSettings { s -> s.copy(models = s.models.toMutableList().also { it[index] = model.copy(temperature = d) }) }
                                 }
                             },
-                            FieldSpec("Max tokens (reasoning ≥ 16384)", profile.maxTokens.toString(), weight = 1.3f) { v ->
+                            FieldSpec("Max tokens (reasoning ≥ 16384)", model.maxTokens.toString(), weight = 1.3f) { v ->
                                 v.toIntOrNull()?.let { n ->
-                                    services.updateSettings { s -> s.copy(profiles = s.profiles.toMutableList().also { it[index] = profile.copy(maxTokens = n) }) }
+                                    services.updateSettings { s -> s.copy(models = s.models.toMutableList().also { it[index] = model.copy(maxTokens = n) }) }
                                 }
                             },
-                            FieldSpec("Таймаут, с", profile.requestTimeoutSec.toString(), weight = 1f) { v ->
+                            FieldSpec("Таймаут, с", model.requestTimeoutSec.toString(), weight = 1f) { v ->
                                 v.toIntOrNull()?.let { n ->
-                                    services.updateSettings { s -> s.copy(profiles = s.profiles.toMutableList().also { it[index] = profile.copy(requestTimeoutSec = n) }) }
+                                    services.updateSettings { s -> s.copy(models = s.models.toMutableList().also { it[index] = model.copy(requestTimeoutSec = n) }) }
                                 }
                             },
                         ),
                     )
                     Row(verticalAlignment = Alignment.CenterVertically) {
                         BtButton(
-                            if (testing == profile.name) "Проверяю…" else "Проверить связь",
-                            enabled = testing == null && profile.baseUrl.isNotBlank() && profile.model.isNotBlank(),
+                            if (testing == model.name) "Проверяю…" else "Проверить связь",
+                            enabled = testing == null && !providerCfg?.baseUrl.isNullOrBlank() && model.model.isNotBlank(),
                             height = 28.dp,
                             onClick = {
-                                testing = profile.name
+                                testing = model.name
                                 scope.launch {
-                                    val result = runCatching { services.llm.testConnection(profile) }
+                                    val result = runCatching { services.llm.testConnection(model.resolve(settings.providers)) }
                                         .fold({ "OK: ${it.take(60)}" }, { "Ошибка: ${it.message?.take(160)}" })
-                                    results = results + (profile.name to result)
+                                    results = results + (model.name to result)
                                     testing = null
                                 }
                             },
                         )
                         Spacer(Modifier.width(8.dp))
-                        results[profile.name]?.let {
+                        results[model.name]?.let {
                             Text(it, fontSize = 12.sp, color = if (it.startsWith("OK")) BtPalette.SuccessDark else BtPalette.Warn, modifier = Modifier.weight(1f))
                         } ?: Spacer(Modifier.weight(1f))
                     }
                 }
             }
         }
-        BtButton("+ Добавить профиль", height = 30.dp, onClick = {
+        if (providerNames.isEmpty()) {
+            Text("Сначала добавьте провайдера — модели ссылаются на него.", fontSize = 12.sp, color = BtPalette.TextSecondary)
+        }
+        BtButton("+ Добавить модель", height = 30.dp, onClick = {
             services.updateSettings { s ->
-                s.copy(profiles = s.profiles + LlmProfile(name = "Профиль ${s.profiles.size + 1}", baseUrl = ""))
+                s.copy(models = s.models + LlmModel(name = "Модель ${s.models.size + 1}", provider = s.providers.firstOrNull()?.name.orEmpty()))
             }
         })
     }
@@ -400,7 +502,7 @@ private fun ProfilesSection(state: AppState, services: ru.sebyanin.booktranslato
 
 @Composable
 private fun RolesSection(services: ru.sebyanin.booktranslator.core.AppServices, settings: AppSettings) {
-    val profileNames = settings.profiles.map { it.name }
+    val modelNames = settings.models.map { it.name }
     Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
         AgentRole.entries.forEach { role ->
             Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.padding(top = 4.dp)) {
@@ -409,7 +511,7 @@ private fun RolesSection(services: ru.sebyanin.booktranslator.core.AppServices, 
                     Text(role.description, fontSize = 11.sp, color = BtPalette.TextSecondary)
                 }
                 BtDropdown(
-                    options = profileNames,
+                    options = modelNames,
                     selected = settings.roleBindings[role.id],
                     onSelect = { selected ->
                         services.updateSettings { s ->
@@ -418,13 +520,13 @@ private fun RolesSection(services: ru.sebyanin.booktranslator.core.AppServices, 
                             s.copy(roleBindings = bindings)
                         }
                     },
-                    placeholder = "— первый профиль —",
+                    placeholder = "— первая модель —",
                     allowEmpty = true,
                 )
             }
         }
-        if (profileNames.isEmpty()) {
-            Text("Добавьте профиль — он подойдёт всем ролям по умолчанию.", fontSize = 12.sp, color = BtPalette.TextSecondary)
+        if (modelNames.isEmpty()) {
+            Text("Добавьте модель — она подойдёт всем ролям по умолчанию.", fontSize = 12.sp, color = BtPalette.TextSecondary)
         }
     }
 }

@@ -2,7 +2,7 @@ package ru.sebyanin.booktranslator.core.pipeline
 
 import ru.sebyanin.booktranslator.core.glossary.KnowledgeService
 import ru.sebyanin.booktranslator.core.llm.AgentRunner
-import ru.sebyanin.booktranslator.core.llm.OpenAiCompatClient
+import ru.sebyanin.booktranslator.core.llm.LlmClient
 import ru.sebyanin.booktranslator.core.log.AppLog
 import ru.sebyanin.booktranslator.core.model.AgentRole
 import ru.sebyanin.booktranslator.core.model.AppSettings
@@ -53,7 +53,7 @@ abstract class FragmentStage(
     protected val store: ProjectStore,
     protected val promptStore: PromptStore,
     protected val knowledge: KnowledgeService,
-    protected val client: OpenAiCompatClient,
+    protected val client: LlmClient,
     protected val settingsProvider: () -> AppSettings,
     /** VerifyEngine зависит от пресета проекта (ja/generic). */
     protected val verifyProvider: (String) -> VerifyEngine,
@@ -130,7 +130,7 @@ class DraftStage(
     store: ProjectStore,
     promptStore: PromptStore,
     knowledge: KnowledgeService,
-    client: OpenAiCompatClient,
+    client: LlmClient,
     settingsProvider: () -> AppSettings,
     verifyProvider: (String) -> VerifyEngine,
 ) : FragmentStage(store, promptStore, knowledge, client, settingsProvider, verifyProvider) {
@@ -157,7 +157,7 @@ class DraftStage(
         val settings = settingsProvider()
         val project = store.loadProject(projectSlug)
         val profile = settings.profileFor(role)
-            ?: error("Не настроен профиль LLM для роли «${role.title}» (Настройки → Профили)")
+            ?: error("Не настроена модель LLM для роли «${role.title}» (Настройки → Модели)")
         val bookDir = store.bookDir(projectSlug, bookSlug)
         val registry = toolsRegistry(settings, project)
         val ctx = ToolContext(projectSlug, bookSlug, store, knowledge)
@@ -363,7 +363,7 @@ class EditStage(
     store: ProjectStore,
     promptStore: PromptStore,
     knowledge: KnowledgeService,
-    client: OpenAiCompatClient,
+    client: LlmClient,
     settingsProvider: () -> AppSettings,
     verifyProvider: (String) -> VerifyEngine,
 ) : FragmentStage(store, promptStore, knowledge, client, settingsProvider, verifyProvider) {
@@ -381,7 +381,7 @@ class EditStage(
         val settings = settingsProvider()
         val project = store.loadProject(projectSlug)
         val profile = settings.profileFor(role)
-            ?: error("Не настроен профиль LLM для роли «${role.title}» (Настройки → Профили)")
+            ?: error("Не настроена модель LLM для роли «${role.title}» (Настройки → Модели)")
         val bookDir = store.bookDir(projectSlug, bookSlug)
         val registry = toolsRegistry(settings, project)
         val ctx = ToolContext(projectSlug, bookSlug, store, knowledge)

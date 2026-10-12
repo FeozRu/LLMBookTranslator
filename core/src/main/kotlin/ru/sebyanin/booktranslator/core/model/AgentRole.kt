@@ -2,7 +2,7 @@ package ru.sebyanin.booktranslator.core.model
 
 /**
  * Роли конвейера. Идентификаторы стабильны — используются в настройках,
- * привязках «роль → профиль LLM», промптах и MCP.
+ * привязках «роль → модель LLM», промптах и MCP.
  */
 enum class AgentRole(val id: String, val title: String, val description: String) {
     DRAFT("draft", "Переводчик", "Черновой дословный перевод с тегами тона и пометками контекста"),

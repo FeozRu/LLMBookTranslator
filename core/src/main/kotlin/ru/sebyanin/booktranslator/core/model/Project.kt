@@ -11,7 +11,7 @@ data class ProjectMeta(
     val targetLang: String = "ru",
     /** Пресет проверок/конвенций: "ja" (кана, Поливанов, суффиксы) или "generic". */
     val preset: String = "generic",
-    /** Переопределение привязки roleId → имя профиля LLM (глобальные — в настройках). */
+    /** Переопределение привязки roleId → имя модели LLM (глобальные — в настройках). */
     val roleBindingsOverride: Map<String, String> = emptyMap(),
     /** Роли, которым инструменты отключены именно в этом проекте. */
     val toolsDisabledRoles: List<String> = emptyList(),

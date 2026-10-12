@@ -2,7 +2,7 @@ package ru.sebyanin.booktranslator.core.pipeline
 
 import ru.sebyanin.booktranslator.core.glossary.KnowledgeService
 import ru.sebyanin.booktranslator.core.llm.AgentRunner
-import ru.sebyanin.booktranslator.core.llm.OpenAiCompatClient
+import ru.sebyanin.booktranslator.core.llm.LlmClient
 import ru.sebyanin.booktranslator.core.llm.PromptDefaults
 import ru.sebyanin.booktranslator.core.log.AppLog
 import ru.sebyanin.booktranslator.core.model.AgentRole
@@ -32,7 +32,7 @@ class CriticStage(
     private val store: ProjectStore,
     private val promptStore: PromptStore,
     private val knowledge: KnowledgeService,
-    private val client: OpenAiCompatClient,
+    private val client: LlmClient,
     private val settingsProvider: () -> AppSettings,
 ) {
     private val runner = AgentRunner(client)
@@ -46,7 +46,7 @@ class CriticStage(
     ): StageSummary {
         val settings = settingsProvider()
         val profile = settings.profileFor(AgentRole.CRITIC)
-            ?: error("Не настроен профиль LLM для роли «${AgentRole.CRITIC.title}»")
+            ?: error("Не настроена модель LLM для роли «${AgentRole.CRITIC.title}»")
         val project = store.loadProject(projectSlug)
         val structure = store.loadStructure(projectSlug, bookSlug)
         val bookDir = store.bookDir(projectSlug, bookSlug)
@@ -287,7 +287,7 @@ class CriticStage(
     ): Int {
         val settings = settingsProvider()
         val profile = settings.profileFor(AgentRole.CRITIC)
-            ?: error("Не настроен профиль LLM для роли «${AgentRole.CRITIC.title}»")
+            ?: error("Не настроена модель LLM для роли «${AgentRole.CRITIC.title}»")
         val project = store.loadProject(projectSlug)
         val registry = toolRegistry(project, settings)
         val ctx = ToolContext(projectSlug, bookSlug, store, knowledge)

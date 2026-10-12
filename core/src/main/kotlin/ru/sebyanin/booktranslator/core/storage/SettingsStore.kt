@@ -1,6 +1,8 @@
 package ru.sebyanin.booktranslator.core.storage
 
+import ru.sebyanin.booktranslator.core.log.AppLog
 import ru.sebyanin.booktranslator.core.model.AppSettings
+import ru.sebyanin.booktranslator.core.model.migratedFromProfiles
 import java.nio.file.Files
 import java.nio.file.Path
 import java.nio.file.StandardCopyOption
@@ -12,7 +14,7 @@ class SettingsStore(private val dataRootPath: Path) {
 
     fun load(): AppSettings {
         if (!Files.isRegularFile(settingsFile)) return AppSettings()
-        return runCatching {
+        val decoded = runCatching {
             AppJson.decodeFromString<AppSettings>(Files.readString(settingsFile))
         }.getOrElse {
             // Повреждённые настройки не должны блокировать запуск; бэкапим и начинаем заново.
@@ -23,8 +25,20 @@ class SettingsStore(private val dataRootPath: Path) {
                     StandardCopyOption.REPLACE_EXISTING,
                 )
             }
-            AppSettings()
+            return AppSettings()
         }
+        // Миграция schema 1 (монопрофили) → провайдеры + модели, детерминированная
+        // по legacy-профилям: повторный прогон после отката файла ничего не теряет.
+        val migrated = decoded.migratedFromProfiles() ?: return decoded
+        runCatching { save(migrated) }.onFailure {
+            AppLog.warn("settings", "Не удалось сохранить мигрированные настройки: ${it.message}")
+        }
+        AppLog.info(
+            "settings",
+            "Профили мигрировали в провайдеры+модели: " +
+                "${migrated.providers.size} провайдер(ов), ${migrated.models.size} модель(ей)",
+        )
+        return migrated
     }
 
     fun save(settings: AppSettings) {
