@@ -159,8 +159,35 @@ jobs:
             echo "Релиз v$v уже существует — пропускаю (артефакты предыдущей сборки не трогаю)"
             exit 0
           fi
-          gh release create "v$v" \
-            --target "$GITHUB_SHA" \
-            --title "v$v" \
-            --generate-notes \
-            dist/*
+
+          # HTTP 5xx у GitHub API бывают мимолётными (бывали на POST /releases) —
+          # повторяем; если попытка упала, а релиз всё же создался, считаем успехом
+          created=false
+          for attempt in 1 2 3; do
+            if gh release create "v$v" --target "$GITHUB_SHA" --title "v$v" --generate-notes; then
+              created=true; break
+            fi
+            if gh release view "v$v" >/dev/null 2>&1; then
+              echo "Релиз создался, несмотря на ошибку попытки $attempt"; created=true; break
+            fi
+            [ "$attempt" = 3 ] && break
+            echo "Создание, попытка $attempt не удалась (похоже, мимолётный 5xx API) — повтор через 15 с"
+            sleep 15
+          done
+          if [ "$created" != "true" ]; then
+            echo "::error::Релиз v$v не создан за 3 попытки"
+            exit 1
+          fi
+
+          # Артефакты грузим ОТДЕЛЬНО от создания: их сбой не роняет релиз,
+          # а повтор досыливает недогруженное (--clobber перезаписывает частичное)
+          for attempt in 1 2 3; do
+            if gh release upload "v$v" dist/* --clobber; then
+              exit 0
+            fi
+            [ "$attempt" = 3 ] && break
+            echo "Загрузка артефактов, попытка $attempt не удалась — повтор через 15 с"
+            sleep 15
+          done
+          echo "::error::Артефакты v$v не загружены за 3 попытки"
+          exit 1
