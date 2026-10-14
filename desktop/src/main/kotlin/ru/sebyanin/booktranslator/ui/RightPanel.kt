@@ -182,6 +182,7 @@ private fun StagePanel(state: AppState, modifier: Modifier = Modifier) {
     val running by state.runningStage.collectAsState()
     val glossary by state.glossary.collectAsState()
     val notes by state.notes.collectAsState()
+    val qaReport by state.qaReport.collectAsState()
 
     val frags = manifest?.allFragments().orEmpty()
     val draftDone = frags.count { it.draft.isDone }
@@ -334,6 +335,28 @@ private fun StagePanel(state: AppState, modifier: Modifier = Modifier) {
                 }
             }
         }
+
+        // QA — финальная проверка всей книги, последний этап перед экспортом
+        val qa = qaReport
+        StageCard(
+            title = "QA",
+            status = when {
+                running == "qa" -> "работает" to BtPalette.AccentText
+                qa != null && !qa.ok -> "проблемы: ${qa.problems.size}" to BtPalette.Warn
+                qa != null && qa.warnings.isNotEmpty() -> "предупреждения: ${qa.warnings.size}" to BtPalette.Warn
+                qa != null -> "чисто" to BtPalette.SuccessDark
+                else -> "ожидает" to BtPalette.TextSecondary
+            },
+            description = when {
+                qa == null -> "Финальная проверка: verify глав, глоссарий, типографика"
+                else -> "переведено ${qa.chaptersTranslated} из ${qa.chapters} глав; " +
+                    "знаков ${qa.stats["знаков"] ?: 0}; подробности — в журнале"
+            },
+            progress = qa?.let { it.chaptersTranslated.toFloat() / it.chapters },
+            action = "Проверить",
+            actionEnabled = running == null && b != null,
+            onAction = { state.runQa() },
+        )
     }
 }
 

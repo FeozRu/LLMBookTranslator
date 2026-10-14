@@ -14,6 +14,7 @@ import ru.sebyanin.booktranslator.core.model.ProjectMeta
 import ru.sebyanin.booktranslator.core.model.WorkManifest
 import ru.sebyanin.booktranslator.core.pipeline.AssemblyStage
 import ru.sebyanin.booktranslator.core.pipeline.FragmentProgress
+import ru.sebyanin.booktranslator.core.pipeline.QaReport
 import ru.sebyanin.booktranslator.core.pipeline.SplitStage
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -23,6 +24,9 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import java.awt.Desktop
+import java.awt.FileDialog
+import java.awt.Frame
 import java.nio.file.Files
 import java.nio.file.Path
 
@@ -61,6 +65,9 @@ class AppState(val services: AppServices, private val scope: CoroutineScope) {
 
     /** Решения ревизора глоссария: файл вне манифеста, уровень ПРОЕКТА. */
     val glossaryRevision = MutableStateFlow<List<GlossaryRevisionDecision>>(emptyList())
+
+    /** Последний отчёт QA текущей книги (сбрасывается при смене книги). */
+    val qaReport = MutableStateFlow<QaReport?>(null)
 
     /**
      * Версия решений ревизора: инкрементируется при перезагрузке знаний
@@ -122,6 +129,7 @@ class AppState(val services: AppServices, private val scope: CoroutineScope) {
             services.updateSettings { it.copy(lastBookByProject = it.lastBookByProject + (p.slug to meta.slug)) }
         }
         currentBook.value = meta
+        qaReport.value = null
         refreshBook()
         selectedChapter.value = structure.value?.chapters?.firstOrNull()?.index
     }
@@ -333,23 +341,59 @@ class AppState(val services: AppServices, private val scope: CoroutineScope) {
         }
     }
 
-    fun buildEpub() = buildBook("epub")
-    fun buildFb2() = buildBook("fb2")
+    fun buildEpub() = buildBook("epub", askTarget = true)
+    fun buildFb2() = buildBook("fb2", askTarget = true)
 
-    private fun buildBook(kind: String) {
+    /** Сборка без диалога — для запуска извне (MCP): файл остаётся в build/. */
+    fun buildBookAuto(kind: String) = buildBook(kind, askTarget = false)
+
+    private fun buildBook(kind: String, askTarget: Boolean) {
         val p = currentProject.value ?: return
         val b = currentBook.value ?: return
+        // Место и имя спрашиваем ДО сборки; отмена — ничего не запускаем
+        val target = if (askTarget) {
+            askSaveTarget("${b.slug}-ru", if (kind == "epub") "epub" else "fb2") ?: return
+        } else null
         runStage("build-$kind") {
             withContext(Dispatchers.IO) {
                 if (kind == "epub") {
                     val r = services.epubBuilder.build(p.slug, b.slug)
-                    message.value = "EPUB: ${r.file.fileName} (глав ${r.chapters}, примечаний ${r.notes})"
+                    val dest = target?.let { copyToTarget(r.file, it) } ?: r.file
+                    val where = if (dest == r.file) "" else " → ${dest.parent}"
+                    message.value = "EPUB: ${dest.fileName}$where (глав ${r.chapters}, примечаний ${r.notes})"
                 } else {
                     val f = services.fb2Builder.build(p.slug, b.slug)
-                    message.value = "FB2: ${f.fileName}"
+                    val dest = target?.let { copyToTarget(f, it) } ?: f
+                    val where = if (dest == f) "" else " → ${dest.parent}"
+                    message.value = "FB2: ${dest.fileName}$where"
                 }
             }
         }
+    }
+
+    /** Нативный диалог «Сохранить как»: место и имя; null — пользователь отменил. */
+    private fun askSaveTarget(baseName: String, ext: String): Path? {
+        val dialog = FileDialog(Frame(), "Сохранить книгу", FileDialog.SAVE)
+        dialog.file = "$baseName.$ext"
+        dialog.isVisible = true
+        val name = dialog.file ?: return null
+        val dir = dialog.directory ?: return null
+        val withExt = if (name.endsWith(".$ext", ignoreCase = true)) name else "$name.$ext"
+        return Path.of(dir, withExt)
+    }
+
+    /** Сборка остаётся в build/ проекта; выбранное место получает копию. */
+    private fun copyToTarget(built: Path, target: Path): Path {
+        if (built.toAbsolutePath() == target.toAbsolutePath()) return built
+        return Files.copy(built, target, java.nio.file.StandardCopyOption.REPLACE_EXISTING)
+    }
+
+    /** Открыть папку книги (или проекта, если книга не выбрана) в файловом менеджере. */
+    fun openFolder() {
+        val p = currentProject.value ?: return
+        val b = currentBook.value
+        val dir = if (b != null) services.projectStore.bookDir(p.slug, b.slug) else services.projectStore.projectDir(p.slug)
+        runCatching { Desktop.getDesktop().open(dir.toFile()) }.onFailure { fail(it) }
     }
 
     fun runQa() {
@@ -358,6 +402,7 @@ class AppState(val services: AppServices, private val scope: CoroutineScope) {
         runStage("qa") {
             withContext(Dispatchers.IO) {
                 val report = services.qaStage.run(p.slug, b.slug, services.verifyFor(p.slug))
+                qaReport.value = report
                 message.value = if (report.ok) "QA: чисто (${report.chaptersTranslated}/${report.chapters} глав; предупреждений ${report.warnings.size})"
                 else "QA: проблем ${report.problems.size}: ${report.problems.take(3).joinToString("; ")}"
             }
@@ -392,8 +437,8 @@ class AppState(val services: AppServices, private val scope: CoroutineScope) {
                 "revisor" -> runGlossaryRevisor("queue")
                 "revisor_canon" -> runGlossaryRevisor("canon")
                 "qa" -> runQa()
-                "build_epub" -> buildEpub()
-                "build_fb2" -> buildFb2()
+                "build_epub" -> buildBookAuto("epub")
+                "build_fb2" -> buildBookAuto("fb2")
                 else -> error("неизвестный этап: $stage")
             }
             "$stage/$book"

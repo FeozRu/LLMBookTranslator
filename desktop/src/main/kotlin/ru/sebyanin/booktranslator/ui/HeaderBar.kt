@@ -29,8 +29,10 @@ import ru.sebyanin.booktranslator.ui.theme.BtPalette
  * Шапка из двух зон, выровненных по колонкам окна (правая колонка — свой
  * столбец на всю высоту, уведомление конвейера живёт в нём, см. RightPanel):
  *  - левая (280dp, как левая панель) — книга и языковая пара;
- *  - центральная — прогресс и экспорт/QA: шкала забирает всё свободное место
- *    (weight 1f), при сужении окна сжимается она, а не кнопки.
+ *  - центральная — прогресс, «Папка» и экспорт: шкала забирает всё свободное
+ *    место (weight 1f), при сужении окна сжимается она, а не кнопки.
+ * Экспорт спрашивает место и имя (нативный «Сохранить как»), «Папка» открывает
+ * папку книги в файловом менеджере; QA — этап, его карточка живёт в StagePanel.
  */
 @Composable
 fun HeaderBar(state: AppState) {
@@ -85,11 +87,11 @@ fun HeaderBar(state: AppState) {
             Spacer(Modifier.width(8.dp))
             Text("$done/$total", fontSize = 13.sp, color = BtPalette.TextSecondary)
             Spacer(Modifier.width(12.dp))
+            BtButton("Папка", onClick = { state.openFolder() }, enabled = p != null, height = 32.dp)
+            Spacer(Modifier.width(6.dp))
             BtButton("EPUB", onClick = { state.buildEpub() }, enabled = running == null && b != null, height = 32.dp)
             Spacer(Modifier.width(6.dp))
             BtButton("FB2", onClick = { state.buildFb2() }, enabled = running == null && b != null, height = 32.dp)
-            Spacer(Modifier.width(6.dp))
-            BtButton("QA", onClick = { state.runQa() }, enabled = running == null && b != null, height = 32.dp)
         }
     }
 }
