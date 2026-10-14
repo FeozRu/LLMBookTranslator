@@ -90,6 +90,12 @@ data class ApiToolFunction(
     val parameters: JsonElement = JsonNull,
 )
 
+/** DeepSeek/GLM-стиль: {"thinking":{"type":"disabled"}} — выключить рассуждения у hybrid-модели. */
+@Serializable
+data class ThinkingParam(
+    val type: String,
+)
+
 @Serializable
 data class ChatCompletionRequest(
     val model: String,
@@ -97,6 +103,7 @@ data class ChatCompletionRequest(
     val temperature: Double? = null,
     @SerialName("max_tokens") val maxTokens: Int? = null,
     val tools: List<ApiTool>? = null,
+    val thinking: ThinkingParam? = null,
     val stream: Boolean = false,
 )
 

@@ -6,6 +6,7 @@ import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 import org.junit.jupiter.api.Assertions.assertEquals
+import org.junit.jupiter.api.Assertions.assertFalse
 import org.junit.jupiter.api.Assertions.assertThrows
 import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.Test
@@ -81,6 +82,23 @@ class AnthropicWireTest {
         assertTrue(encoded.contains("\"input_schema\""))
         assertTrue(encoded.contains("\"max_tokens\""))
         assertTrue(encoded.contains("\"system\""))
+    }
+
+    @Test
+    fun `temperature не уходит в запрос пока не задана - новые модели её отвергают`() {
+        // Дефолт модели (null) — параметра нет вовсе: часть моделей отвечает
+        // «'temperature' is deprecated for this model» на любое значение.
+        val without = AppJson.encodeToString(
+            AnthropicRequest.serializer(),
+            AnthropicWire.buildRequest(profile, listOf(ApiMessage.user("Юзер")), null),
+        )
+        assertFalse(without.contains("temperature"))
+
+        val with = AppJson.encodeToString(
+            AnthropicRequest.serializer(),
+            AnthropicWire.buildRequest(profile.copy(temperature = 0.3), listOf(ApiMessage.user("Юзер")), null),
+        )
+        assertTrue(with.contains("\"temperature\""))
     }
 
     @Test

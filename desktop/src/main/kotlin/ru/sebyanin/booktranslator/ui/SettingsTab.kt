@@ -18,6 +18,7 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.material3.Checkbox
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
@@ -449,8 +450,9 @@ private fun ModelsSection(services: ru.sebyanin.booktranslator.core.AppServices,
                     }
                     FieldRow(
                         listOf(
-                            FieldSpec("Температура", model.temperature.toString(), weight = 1f) { v ->
-                                v.toDoubleOrNull()?.let { d ->
+                            FieldSpec("Температура", model.temperature?.toString() ?: "", placeholder = "по умолчанию", weight = 1f) { v ->
+                                val d = v.trim().toDoubleOrNull()
+                                if (v.isBlank() || d != null) {
                                     services.updateSettings { s -> s.copy(models = s.models.toMutableList().also { it[index] = model.copy(temperature = d) }) }
                                 }
                             },
@@ -465,6 +467,32 @@ private fun ModelsSection(services: ru.sebyanin.booktranslator.core.AppServices,
                                 }
                             },
                         ),
+                    )
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        // УЧИТЫВАЙ ПРИ ПРАВКАХ: BtCard — это Box, несколько детей должны
+                        // лежать в Column/Row (урок наложения — см. память проекта)
+                        modifier = Modifier.clickable {
+                            services.updateSettings { s ->
+                                s.copy(models = s.models.toMutableList().also {
+                                    it[index] = model.copy(noThinking = !model.noThinking)
+                                })
+                            }
+                        },
+                    ) {
+                        Checkbox(
+                            checked = model.noThinking,
+                            onCheckedChange = null, // клик обрабатывает вся строка
+                        )
+                        Text("Принудительно отключить рассуждения", fontSize = 13.sp, modifier = Modifier.weight(1f))
+                    }
+                    Text(
+                        "Шлёт thinking {type:disabled}: гибридные модели (DeepSeek/GLM) рассуждают по умолчанию " +
+                            "и биллят рассуждения как выходные токены — на черновике это львиная доля счёта. " +
+                            "Без галки параметр не отправляется: у DeepSeek рассуждения включены «с завода», " +
+                            "у Клода выключены (на него галка не действует).",
+                        fontSize = 12.sp,
+                        color = BtPalette.TextSecondary,
                     )
                     Row(verticalAlignment = Alignment.CenterVertically) {
                         BtButton(

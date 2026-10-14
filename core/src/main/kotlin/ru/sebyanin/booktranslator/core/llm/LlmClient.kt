@@ -72,13 +72,18 @@ class LlmClient : Closeable {
         return result
     }
 
-    /** Проверка связи: минимальный запрос, ожидаем короткий ответ модели. */
+    /** Проверка связи: минимальный запрос, ожидаем короткий ответ модели. Полный текст ошибки — в журнал. */
     suspend fun testConnection(profile: LlmProfile): String {
-        val response = complete(
-            profile.copy(temperature = 0.0, maxTokens = minOf(profile.maxTokens, 64)),
-            listOf(ApiMessage.user("Это проверка связи. Ответь ровно одним словом: OK")),
-        )
-        return response.content.trim().ifEmpty { "(пустой ответ)" }
+        try {
+            val response = complete(
+                profile.copy(maxTokens = minOf(profile.maxTokens, 64)),
+                listOf(ApiMessage.user("Это проверка связи. Ответь ровно одним словом: OK")),
+            )
+            return response.content.trim().ifEmpty { "(пустой ответ)" }
+        } catch (e: Exception) {
+            AppLog.error("llm", "Проверка связи «${profile.name}»: ${e.message}")
+            throw e
+        }
     }
 
     private suspend fun completeOpenAi(
@@ -92,6 +97,7 @@ class LlmClient : Closeable {
             temperature = profile.temperature,
             maxTokens = profile.maxTokens,
             tools = tools?.map { ApiTool(function = ApiToolFunction(it.name, it.description, it.parametersSchema)) },
+            thinking = if (profile.noThinking) ThinkingParam("disabled") else null,
         )
         val body = postForBody(
             profile,
@@ -158,9 +164,17 @@ class LlmClient : Closeable {
         val text = response.bodyAsText()
         if (response.status != HttpStatusCode.OK) {
             throw LlmException(
-                "HTTP ${response.status.value} от ${profile.name}: ${text.take(500)}",
-                httpStatus = response.status.value,
-                terminal = response.status.value in 400..499,
+                when {
+                    code in 400..499 && text.contains("temperature", ignoreCase = true) ->
+                        "HTTP $code от ${profile.name}: модель не принимает «Температуру» — очистите это поле " +
+                            "в карточке модели (пусто = параметр не отправляется). Ответ: ${text.take(300)}"
+                    code in 400..499 && text.contains("thinking", ignoreCase = true) ->
+                        "HTTP $code от ${profile.name}: модель не принимает параметр «Рассуждения» — " +
+                            "переключите его в «Включены» в карточке модели. Ответ: ${text.take(300)}"
+                    else -> "HTTP $code от ${profile.name}: ${text.take(500)}"
+                },
+                httpStatus = code,
+                terminal = code in 400..499,
             )
         }
         return text

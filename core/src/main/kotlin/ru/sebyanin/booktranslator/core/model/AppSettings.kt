@@ -30,11 +30,19 @@ data class LlmModel(
     val provider: String,
     /** Идентификатор модели в API провайдера. */
     val model: String = "",
-    val temperature: Double = 0.3,
+    /** null = параметр не отправляется: часть новых моделей (Claude 5.5+) отвергает temperature вовсе. */
+    val temperature: Double? = null,
     /** Reasoning-модели тратят квоту на рассуждения: 16384 — безопасный дефолт. */
     val maxTokens: Int = 16384,
     /** Таймаут одного запроса (в секундах) — с запасом на медленные редактурные проходы. */
     val requestTimeoutSec: Int = 900,
+    /** Принудительно отключить рассуждения: шлём thinking {type:disabled} в OpenAI-запросе.
+     *  Гибридные модели (DeepSeek/GLM) рассуждают по умолчанию и биллят рассуждения как
+     *  выходные токены — на черновике это львиная доля счёта. false (дефолт) = параметр
+     *  не отправляется вовсе, модель живёт по своему серверному дефолту (у DeepSeek
+     *  рассуждения включены, у Клода выключены). Для Anthropic-провайдеров флаг не
+     *  действует — там thinking включается только явно. */
+    val noThinking: Boolean = false,
 ) {
     /** Сборка точки вызова: параметры модели + адрес/ключ/протокол её провайдера. */
     fun resolve(providers: List<LlmProvider>): LlmProfile {
@@ -48,6 +56,7 @@ data class LlmModel(
             temperature = temperature,
             maxTokens = maxTokens,
             requestTimeoutSec = requestTimeoutSec,
+            noThinking = noThinking,
         )
     }
 }
@@ -61,11 +70,14 @@ data class LlmProfile(
     val apiKey: String = "",
     val model: String = "",
     val api: ApiKind = ApiKind.OPENAI,
-    val temperature: Double = 0.3,
+    /** null = параметр не отправляется. */
+    val temperature: Double? = null,
     /** Reasoning-модели тратят квоту на рассуждения: 16384 — безопасный дефолт. */
     val maxTokens: Int = 16384,
     /** Таймаут одного запроса (в секундах) — с запасом на медленные редактурные проходы. */
     val requestTimeoutSec: Int = 900,
+    /** true = thinking {type:disabled} в OpenAI-запросе (см. LlmModel.noThinking). */
+    val noThinking: Boolean = false,
 )
 
 @Serializable
