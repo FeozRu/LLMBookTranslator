@@ -90,6 +90,8 @@ class CriticStage(
                             )
                             done++
                         }
+                    } catch (e: ru.sebyanin.booktranslator.core.llm.PaymentRequiredException) {
+                        throw e // 402: остановка всего прогона (гасит остальные главы), не провал одной
                     } catch (e: Exception) {
                         failed++
                         AppLog.error("critic", "Глава ${meta.index}: ${e.message}")

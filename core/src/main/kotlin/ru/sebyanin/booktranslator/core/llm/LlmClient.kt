@@ -17,7 +17,7 @@ import kotlinx.coroutines.TimeoutCancellationException
 import kotlinx.coroutines.withTimeout
 import java.io.Closeable
 
-class LlmException(
+open class LlmException(
     message: String,
     cause: Throwable? = null,
     val httpStatus: Int? = null,
@@ -31,6 +31,14 @@ class LlmException(
         fun terminal(message: String) = LlmException(message, terminal = true)
     }
 }
+
+/**
+ * HTTP 402 Payment Required — на счету провайдера нет средств. Хуже обычной терминальной:
+ * продолжать этап бессмысленно не только ретраем, но и переходом к следующим фрагментам/главам —
+ * каждый вызов упадёт так же и провалит весь остаток книги. Поэтому этапы обязаны пробрасывать
+ * её наверх целиком (полная остановка прогона), а AppState ставит понятный статус.
+ */
+class PaymentRequiredException(message: String) : LlmException(message, httpStatus = 402, terminal = true)
 
 /**
  * HTTP-клиент LLM, говорящий обоих протоколов (выбор — по профилю):
@@ -163,6 +171,13 @@ class LlmClient : Closeable {
         }
         val text = response.bodyAsText()
         if (response.status != HttpStatusCode.OK) {
+            val code = response.status.value
+            if (code == 402) {
+                AppLog.error("llm", "HTTP 402 от ${profile.name}: ${text.take(500)}")
+                throw PaymentRequiredException(
+                    "у «${profile.name}» закончились средства (HTTP 402 Payment Required)",
+                )
+            }
             throw LlmException(
                 when {
                     code in 400..499 && text.contains("temperature", ignoreCase = true) ->

@@ -178,6 +178,8 @@ class DraftStage(
                     try {
                         val ok = processFragment(target, bookDir, projectSlug, project, profile, registry, ctx, settings, verify)
                         if (ok) done++ else failed++
+                    } catch (e: ru.sebyanin.booktranslator.core.llm.PaymentRequiredException) {
+                        throw e // 402: остановка всего этапа (гасит остальные фрагменты), не провал одного
                     } catch (e: Exception) {
                         failed++
                         AppLog.error(stageName, "Фрагмент ${target.fragmentId}: ${e.message}")
@@ -309,6 +311,8 @@ class DraftStage(
                 return true
             } catch (e: kotlinx.coroutines.CancellationException) {
                 throw e // остановка этапа пользователем — не ошибка попытки
+            } catch (e: ru.sebyanin.booktranslator.core.llm.PaymentRequiredException) {
+                throw e // 402: ретраи и следующий фрагмент упадут так же — остановка этапа
             } catch (e: Exception) {
                 lastError = e.message ?: e::class.simpleName ?: "ошибка"
                 AppLog.warn(stageName, "Фрагмент ${target.fragmentId}, попытка $attempt: $lastError")
@@ -411,6 +415,8 @@ class EditStage(
                     semaphore.acquire()
                     try {
                         if (processFragment(target, bookDir, projectSlug, profile, registry, ctx, settings, verify)) done++ else failed++
+                    } catch (e: ru.sebyanin.booktranslator.core.llm.PaymentRequiredException) {
+                        throw e // 402: остановка всего этапа (гасит остальные фрагменты), не провал одного
                     } catch (e: Exception) {
                         failed++
                         AppLog.error(stageName, "Фрагмент ${target.fragmentId}: ${e.message}")
@@ -527,6 +533,8 @@ class EditStage(
                 return true
             } catch (e: kotlinx.coroutines.CancellationException) {
                 throw e // остановка этапа пользователем — не ошибка попытки
+            } catch (e: ru.sebyanin.booktranslator.core.llm.PaymentRequiredException) {
+                throw e // 402: ретраи и следующий фрагмент упадут так же — остановка этапа
             } catch (e: Exception) {
                 lastError = e.message ?: e::class.simpleName ?: "ошибка"
                 AppLog.warn(stageName, "Фрагмент ${target.fragmentId}, попытка $attempt: $lastError")

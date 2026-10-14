@@ -196,10 +196,17 @@ class AppState(val services: AppServices, private val scope: CoroutineScope) {
             runningStage.value = name
             stageProgress.value = ""
             runCatching { block() }.onFailure {
-                if (it is kotlinx.coroutines.CancellationException) {
-                    AppLog.info(name, "Этап остановлен пользователем (готовое сохранено)")
-                } else {
-                    fail(it)
+                when {
+                    it is kotlinx.coroutines.CancellationException -> {
+                        AppLog.info(name, "Этап остановлен пользователем (готовое сохранено)")
+                    }
+                    // HTTP 402: этап остановился сам целиком — объясняем человеку, что делать
+                    it is ru.sebyanin.booktranslator.core.llm.PaymentRequiredException -> {
+                        message.value = "Ошибка: все задачи остановлены — ${it.message}. " +
+                            "Пополните баланс и запустите этап заново; готовое сохранено."
+                        AppLog.error("ui", it.message ?: it.toString())
+                    }
+                    else -> fail(it)
                 }
             }
             runningStage.value = null
