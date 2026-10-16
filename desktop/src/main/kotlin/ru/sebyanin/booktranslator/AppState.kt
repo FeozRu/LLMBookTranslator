@@ -14,6 +14,7 @@ import ru.sebyanin.booktranslator.core.model.KnowledgeNote
 import ru.sebyanin.booktranslator.core.model.ProjectMeta
 import ru.sebyanin.booktranslator.core.model.WorkManifest
 import ru.sebyanin.booktranslator.core.pipeline.AssemblyStage
+import ru.sebyanin.booktranslator.core.pipeline.BlockEditor
 import ru.sebyanin.booktranslator.core.pipeline.FragmentProgress
 import ru.sebyanin.booktranslator.core.pipeline.QaReport
 import ru.sebyanin.booktranslator.core.pipeline.SplitStage
@@ -81,6 +82,9 @@ class AppState(val services: AppServices, private val scope: CoroutineScope) {
 
     /** Оффер замены термина в переведённом тексте; снимается кнопкой или сам, когда менять нечего. */
     val termReplaceOffer = MutableStateFlow<TermReplaceOffer?>(null)
+
+    /** Готовое примечание от модели — забирает панель примечаний редактора блоков и снимается ею. */
+    val noteDraft = MutableStateFlow<String?>(null)
 
     private var stageJob: Job? = null
 
@@ -421,6 +425,40 @@ class AppState(val services: AppServices, private val scope: CoroutineScope) {
         }
     }
 
+    /**
+     * Ручная правка блока «Перевода» (редактор по клику): сохранение в эффективное
+     * поле фрагмента (verify внутри BlockEditor при сбое оставляет файл нетронутым)
+     * и тихая пересборка главы — собранный файл читают предпросмотр и экспорт,
+     * без пересборки правка осталась бы невидимой.
+     */
+    fun saveBlockEdit(ref: BlockEditor.BlockRef, chapter: Int, newText: String) {
+        val p = currentProject.value ?: return
+        val b = currentBook.value ?: return
+        runStage("edit-block") {
+            withContext(Dispatchers.IO) {
+                val error = services.blockEditor.saveEdit(p.slug, b.slug, ref, newText)
+                if (error != null) error("правка не сохранена: $error")
+                val verify = services.verifyFor(p.slug)
+                val version = if (allEditedDone(chapter)) AssemblyStage.Version.EDITED else AssemblyStage.Version.DRAFT
+                val result = services.assemblyStage.assembleChapter(p.slug, b.slug, chapter, version, verify)
+                message.value = if (result.ok) "Блок сохранён, глава пересобрана"
+                else "Блок сохранён, но глава не пересобралась: ${result.problems.joinToString("; ")}"
+            }
+        }
+    }
+
+    /** Примечание от модели к выделенному месту (роль «Примечания»; дефолт — общая модель). */
+    fun requestNote(srcBlock: String, trBlock: String, selection: String) {
+        val p = currentProject.value ?: return
+        val b = currentBook.value ?: return
+        runStage("note") {
+            stageProgress.value = "примечание: запрос к модели…"
+            val note = services.blockEditor.requestNote(p.slug, b.slug, srcBlock, trBlock, selection)
+            noteDraft.value = note
+            message.value = "Примечание готово — проверьте и вставьте"
+        }
+    }
+
     fun buildEpub() = buildBook("epub", askTarget = true)
     fun buildFb2() = buildBook("fb2", askTarget = true)
 
@@ -713,7 +751,14 @@ class AppState(val services: AppServices, private val scope: CoroutineScope) {
 
     /** Блоки выбранной главы: исходник + текущая версия перевода. Если выбранной версии
      *  ещё нет (например, редактуры), показывается другая — [ChapterView.shownVersion]. */
-    data class ChapterView(val src: List<String>, val out: List<String>, val shownVersion: String)
+    data class ChapterView(
+        val src: List<String>,
+        val out: List<String>,
+        val shownVersion: String,
+        /** Параллельно out: какой фрагмент/блок стоит за строкой — ручной редактор блоков.
+         *  Пустые строки-заполнители (перевода ещё нет) не редактируются. */
+        val refs: List<BlockEditor.BlockRef> = emptyList(),
+    )
 
     fun chapterBlocks(chapter: Int): ChapterView {
         val empty = ChapterView(emptyList(), emptyList(), viewVersion.value)
@@ -726,48 +771,58 @@ class AppState(val services: AppServices, private val scope: CoroutineScope) {
         val requested = viewVersion.value
         val alternate = if (requested == "edited") "draft" else "edited"
 
-        fun collect(version: String): List<String> {
+        fun collect(version: String): Pair<List<String>, List<BlockEditor.BlockRef>> {
             val bookDir = services.projectStore.bookDir(p.slug, b.slug)
-            val dir = if (version == "edited") bookDir.resolve("translation") else bookDir.resolve("work").resolve("draft")
-            val assembled = dir.resolve(meta.file)
-            if (Files.isRegularFile(assembled)) {
-                return Files.readAllLines(assembled).filter { it.isNotBlank() }
-            }
-            // Не собрано — склеиваем из фрагментов; недостающие блоки — пустые строки
-            val mf = manifest.value ?: return emptyList()
-            val out = mutableListOf<String>()
-            mf.parts.filter { it.chapterIndex == chapter }.sortedBy { it.id }.forEach { part ->
+            // Ссылки блок → фрагмент всегда считаются проходом по фрагментам: собранный
+            // файл генерируется из тех же полей, а правка блока пересобирает главу —
+            // порядок строк совпадает
+            val refs = mutableListOf<BlockEditor.BlockRef>()
+            val texts = mutableListOf<String>()
+            manifest.value?.parts?.filter { it.chapterIndex == chapter }?.sortedBy { it.id }?.forEach { part ->
                 part.fragments.sortedBy { it.id }.forEach { frag ->
-                    val f = bookDir.resolve("work").resolve("fragments").resolve("${frag.id}.json")
-                    if (Files.isRegularFile(f)) {
-                        val ff = runCatching {
-                            ru.sebyanin.booktranslator.core.storage.AppJson.decodeFromString(
-                                ru.sebyanin.booktranslator.core.model.FragmentFile.serializer(),
-                                Files.readString(f),
-                            )
-                        }.getOrNull()
-                        val texts: List<String> = if (version == "edited") {
-                            ff?.editedBlocks ?: emptyList()
-                        } else {
-                            ff?.draftBlocks ?: emptyList()
+                    val f = runCatching {
+                        ru.sebyanin.booktranslator.core.storage.AppJson.decodeFromString(
+                            ru.sebyanin.booktranslator.core.model.FragmentFile.serializer(),
+                            Files.readString(bookDir.resolve("work").resolve("fragments").resolve("${frag.id}.json")),
+                        )
+                    }.getOrNull()
+                    val field: List<String>? = if (version == "edited") f?.editedBlocks else f?.draftBlocks
+                    if (!field.isNullOrEmpty()) {
+                        val fromEdited = version == "edited" && (f?.editedBlocks?.isNotEmpty() == true)
+                        field.forEachIndexed { i, t ->
+                            refs += BlockEditor.BlockRef(frag.id, i, fromEdited)
+                            texts += t
                         }
-                        out += texts.ifEmpty { ff?.srcBlocks?.map { "" } ?: emptyList() }
+                    } else {
+                        // Перевода ещё нет — заполнитель по числу блоков исходника
+                        f?.srcBlocks?.forEachIndexed { i, _ ->
+                            refs += BlockEditor.BlockRef(frag.id, i, false)
+                            texts += ""
+                        }
                     }
                 }
             }
-            return out
+            // Собранный файл — тот же порядок строк (свежий: правка блока пересобирает главу),
+            // берём его текст; расхождение размеров = файл протух — показываем склейку фрагментов
+            val dir = if (version == "edited") bookDir.resolve("translation") else bookDir.resolve("work").resolve("draft")
+            val assembled = dir.resolve(meta.file)
+            if (Files.isRegularFile(assembled)) {
+                val lines = Files.readAllLines(assembled).filter { it.isNotBlank() }
+                if (lines.size == texts.size) return lines to refs
+            }
+            return texts to refs
         }
 
-        val requestedTexts = collect(requested)
+        val (requestedTexts, requestedRefs) = collect(requested)
         val hasAnyText = requestedTexts.any { it.isNotBlank() && it != "— ещё не переведено —" }
-        if (hasAnyText) return ChapterView(src, requestedTexts, requested)
+        if (hasAnyText) return ChapterView(src, requestedTexts, requested, requestedRefs)
 
         // Фолбэк: показать то, что есть
-        val alternateTexts = collect(alternate)
+        val (alternateTexts, alternateRefs) = collect(alternate)
         return if (alternateTexts.any { it.isNotBlank() }) {
-            ChapterView(src, alternateTexts, alternate)
+            ChapterView(src, alternateTexts, alternate, alternateRefs)
         } else {
-            ChapterView(src, requestedTexts, requested)
+            ChapterView(src, requestedTexts, requested, requestedRefs)
         }
     }
 

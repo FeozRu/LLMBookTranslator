@@ -51,6 +51,10 @@ class AppServices private constructor(
     val termFixer = ru.sebyanin.booktranslator.core.glossary.TermFixer(
         projectStore, promptStore, llm, { _settings.value },
     )
+    // Ручной редактор блоков «Перевода» + примечания { [note: …] } по выделению
+    val blockEditor = ru.sebyanin.booktranslator.core.pipeline.BlockEditor(
+        projectStore, promptStore, knowledge, llm, { _settings.value },
+    )
     val alignSearch = ru.sebyanin.booktranslator.core.align.AlignSearch(projectStore)
     val epubBuilder = ru.sebyanin.booktranslator.core.builder.EpubBuilder(projectStore)
     val fb2Builder = ru.sebyanin.booktranslator.core.builder.Fb2Builder(projectStore)

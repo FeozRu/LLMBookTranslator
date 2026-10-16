@@ -90,7 +90,7 @@ class EpubBuilder(private val store: ProjectStore) {
                         found.forEach { m ->
                             val n = notes.size + 1
                             notes += m.groupValues[1].trim()
-                            line = line.replace(m.value, "<sup class=\"note-ref\"><a href=\"notes.xhtml#n${ch.index}-${n}\" id=\"ref-${ch.index}-${n}\">[$n]</a></sup>")
+                            line = line.replace(m.value, noteRef(ch.index, n))
                         }
                         body.append("<p>").append(escKeepXml(line)).append("</p>\n")
                     }
@@ -101,7 +101,7 @@ class EpubBuilder(private val store: ProjectStore) {
             val notesSection = if (notes.isEmpty()) "" else buildString {
                 append("\n<hr class=\"scene\"/>\n<section class=\"notes\" id=\"notes-${ch.index}\">")
                 notes.forEachIndexed { i, n ->
-                    append("\n<p class=\"note\" id=\"n").append(ch.index).append("-").append(i + 1).append("\">[")
+                    append("\n<p class=\"note\" id=\"").append(noteId(ch.index, i + 1)).append("\">[")
                     append(i + 1).append("] ").append(esc(n)).append("</p>")
                 }
                 append("\n</section>")
@@ -215,6 +215,14 @@ ${chapterFiles.joinToString("\n") { "    <itemref idref=\"" + it.removeSuffix(".
         markers.forEachIndexed { i, m -> out = out.replace("\u0001$i\u0001", m) }
         return out
     }
+
+    companion object {
+        /** id примечания в файле главы; секция примечаний лежит в конце ТОГО ЖЕ файла — href без имени файла. */
+        fun noteId(chapterIndex: Int, n: Int): String = "n$chapterIndex-$n"
+
+        fun noteRef(chapterIndex: Int, n: Int): String =
+            "<sup class=\"note-ref\"><a href=\"#${noteId(chapterIndex, n)}\" id=\"ref-$chapterIndex-$n\">[$n]</a></sup>"
+    }
 }
 
 /** Сборка FB2 2.0 (контейнер XML, картинки base64, примечания — body name="notes"). */
@@ -248,11 +256,11 @@ class Fb2Builder(private val store: ProjectStore) {
                         val noteMarker = Regex("\\{ \\[note:(.+?)] }")
                         noteMarker.findAll(line).forEach { match ->
                             noteCounter++
-                            val noteId = "n$noteCounter"
+                            val id = noteId(noteCounter)
                             noteBodies.append(
-                                "<section id=\"$noteId\"><title><p>[$noteCounter]</p></title><p>${xml(match.groupValues[1].trim())}</p></section>\n",
+                                "<section id=\"$id\"><title><p>[$noteCounter]</p></title><p>${xml(match.groupValues[1].trim())}</p></section>\n",
                             )
-                            line = line.replace(match.value, "<a l:href=\"#note-$noteId\" type=\"note\">[$noteCounter]</a>")
+                            line = line.replace(match.value, noteRef(noteCounter))
                         }
                         body.append("<p>").append(xmlKeep(line)).append("</p>\n")
                     }
@@ -305,7 +313,7 @@ $binaries
         else -> "application/octet-stream"
     }
 
-    private val NOTE_LINK_TAG = Regex("<a l:href=\"#note-[^\"]+\" type=\"note\">\\[\\d+]</a>")
+    private val NOTE_LINK_TAG = Regex("<a l:href=\"#n\\d+\" type=\"note\">\\[\\d+]</a>")
 
     private fun xml(s: String): String = s
         .replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
@@ -317,5 +325,12 @@ $binaries
         var out = xml(NOTE_LINK_TAG.replace(s) { "\u0001${idx++}\u0001" })
         markers.forEachIndexed { i, m -> out = out.replace("\u0001$i\u0001", m) }
         return out
+    }
+
+    companion object {
+        /** id секции примечания в body name="notes"; ссылка в тексте ведёт на тот же id. */
+        fun noteId(n: Int): String = "n$n"
+
+        fun noteRef(n: Int): String = "<a l:href=\"#${noteId(n)}\" type=\"note\">[$n]</a>"
     }
 }
