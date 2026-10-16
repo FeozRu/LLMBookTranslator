@@ -23,11 +23,14 @@ import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
+import androidx.compose.ui.ExperimentalComposeUiApi
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.platform.LocalClipboardManager
+import androidx.compose.ui.platform.ClipEntry
+import androidx.compose.ui.platform.LocalClipboard
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.SpanStyle
 import androidx.compose.ui.text.buildAnnotatedString
@@ -50,7 +53,9 @@ import ru.sebyanin.booktranslator.core.model.GlossaryRevisionDecision
 import ru.sebyanin.booktranslator.core.model.KnowledgeNote
 import ru.sebyanin.booktranslator.core.pipeline.TranslatorDoubt
 import ru.sebyanin.booktranslator.core.pipeline.TranslatorDoubts
+import java.awt.datatransfer.StringSelection
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import ru.sebyanin.booktranslator.ui.components.BtButton
 import ru.sebyanin.booktranslator.ui.components.BtButtonKind
@@ -1659,10 +1664,14 @@ private fun NotesList(state: AppState, notes: List<KnowledgeNote>, query: String
 
 // ---------------- Журнал ----------------
 
+// ClipEntry(native) на десктопе помечен ExperimentalComposeUiApi, но это единственный
+// документированный способ собрать буфер из текста (замена deprecated LocalClipboardManager)
+@OptIn(ExperimentalComposeUiApi::class)
 @Composable
 fun LogTab(state: AppState, modifier: Modifier = Modifier) {
     val events by state.logEvents.collectAsState()
-    val clipboard = LocalClipboardManager.current
+    val clipboard = LocalClipboard.current
+    val scope = rememberCoroutineScope()
     var copyNote by remember { mutableStateOf<String?>(null) }
 
     Column(modifier.padding(12.dp)) {
@@ -1678,8 +1687,12 @@ fun LogTab(state: AppState, modifier: Modifier = Modifier) {
                 "Копировать всё",
                 height = 28.dp,
                 onClick = {
-                    clipboard.setText(AnnotatedString(AppLog.plainText()))
-                    copyNote = "скопировано"
+                    // Новый API буфера: setClipEntry suspend-ный, на десктопе нативная
+                    // обёртка — AWT Transferable (StringSelection кладёт plain text)
+                    scope.launch {
+                        clipboard.setClipEntry(ClipEntry(StringSelection(AppLog.plainText())))
+                        copyNote = "скопировано"
+                    }
                 },
             )
             Spacer(Modifier.width(6.dp))

@@ -31,7 +31,9 @@ tasks.processResources {
 dependencies {
     implementation(project(":core"))
     implementation(compose.desktop.currentOs)
-    implementation(compose.material3)
+    // Алиас compose.material3 депрекейтнут (удалён в будущих CMP) — прямые координаты,
+    // версия зафиксирована в libs.versions.toml и совпадает с резолвом алиаса
+    implementation(libs.compose.material3)
     implementation(libs.kotlinx.coroutines.core)
 }
 

@@ -63,7 +63,7 @@ class AgentRunner(private val client: LlmClient) {
                 }
                 toolBudget--
                 totalCalls++
-                val result = runCatching { executor!!(call) }
+                val result = runCatching { executor(call) }
                     .getOrElse {
                         AppLog.warn("tools", "Ошибка инструмента ${call.name}: ${it.message}")
                         "Ошибка инструмента: ${it.message}"
