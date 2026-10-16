@@ -201,7 +201,7 @@ class CriticStage(
     }
 
     /** Инструменты агента: включены, если не отключены в настройках или в проекте. */
-    private fun toolRegistry(project: ProjectMeta, settings: AppSettings): ToolRegistry? =
+    internal fun toolRegistry(project: ProjectMeta, settings: AppSettings): ToolRegistry? =
         if (settings.agentTools.enabledByDefault &&
             !settings.agentTools.disabledRoles.contains(AgentRole.CRITIC.id) &&
             !project.toolsDisabledRoles.contains(AgentRole.CRITIC.id)

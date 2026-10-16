@@ -70,7 +70,8 @@ abstract class FragmentStage(
         val fragmentId: String,
     )
 
-    protected fun toolsRegistry(settings: AppSettings, project: ProjectMeta): ToolRegistry? {
+    /** null = инструменты отключены (глобально, по роли или для проекта) — роль работает одним запросом. */
+    internal fun toolsRegistry(settings: AppSettings, project: ProjectMeta): ToolRegistry? {
         val globallyOff = !settings.agentTools.enabledByDefault
         val offForRole = settings.agentTools.disabledRoles.contains(role.id) ||
             project.toolsDisabledRoles.contains(role.id)

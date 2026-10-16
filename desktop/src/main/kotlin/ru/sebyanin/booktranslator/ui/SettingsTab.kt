@@ -143,9 +143,11 @@ fun SettingsTab(state: AppState, modifier: Modifier = Modifier) {
                     },
                 ),
             )
+            val toolsOffFor = AgentRole.entries.filter { it.id in settings.agentTools.disabledRoles }.map { it.title }
             Text(
-                "Инструменты агентов: ${if (settings.agentTools.enabledByDefault) "включены" else "выключены"}; " +
-                    "лимит ${settings.agentTools.maxToolCallsPerFragment} вызовов/фрагмент, ответ ≤ ${settings.agentTools.maxToolResultChars} зн.",
+                "Инструменты агентов: ${if (settings.agentTools.enabledByDefault) "включены" else "выключены"}" +
+                    (if (settings.agentTools.enabledByDefault && toolsOffFor.isNotEmpty()) " (без инструментов: ${toolsOffFor.joinToString(", ")})" else "") +
+                    "; лимит ${settings.agentTools.maxToolCallsPerFragment} вызовов/фрагмент, ответ ≤ ${settings.agentTools.maxToolResultChars} зн.",
                 fontSize = 12.sp,
                 color = BtPalette.TextSecondary,
             )
@@ -528,6 +530,9 @@ private fun ModelsSection(services: ru.sebyanin.booktranslator.core.AppServices,
     }
 }
 
+/** Роли, которым можно отключить инструменты (у остальных этапы всегда зовут модель без tools). */
+private val ToolCapableRoles = setOf(AgentRole.DRAFT.id, AgentRole.EDITOR.id, AgentRole.CRITIC.id)
+
 @Composable
 private fun RolesSection(services: ru.sebyanin.booktranslator.core.AppServices, settings: AppSettings) {
     val modelNames = settings.models.map { it.name }
@@ -550,10 +555,33 @@ private fun RolesSection(services: ru.sebyanin.booktranslator.core.AppServices, 
             )
         }
         AgentRole.entries.forEach { role ->
+            val toolsOff = role.id in settings.agentTools.disabledRoles
             Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.padding(top = 4.dp)) {
                 Column(Modifier.weight(1f)) {
                     Text(role.title, fontSize = 13.sp)
                     Text(role.description, fontSize = 11.sp, color = BtPalette.TextSecondary)
+                }
+                if (role.id in ToolCapableRoles) {
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        modifier = Modifier.clickable {
+                            services.updateSettings { s ->
+                                val disabled = s.agentTools.disabledRoles
+                                s.copy(
+                                    agentTools = s.agentTools.copy(
+                                        disabledRoles = if (role.id in disabled) disabled - role.id else disabled + role.id,
+                                    ),
+                                )
+                            }
+                        },
+                    ) {
+                        Checkbox(
+                            checked = toolsOff,
+                            onCheckedChange = null, // клик обрабатывает вся строка
+                        )
+                        Text("без инструментов", fontSize = 12.sp, color = BtPalette.TextSecondary)
+                    }
+                    Spacer(Modifier.width(8.dp))
                 }
                 BtDropdown(
                     options = modelNames,
@@ -573,6 +601,13 @@ private fun RolesSection(services: ru.sebyanin.booktranslator.core.AppServices, 
         if (modelNames.isEmpty()) {
             Text("Добавьте модель — она подойдёт всем ролям по умолчанию.", fontSize = 12.sp, color = BtPalette.TextSecondary)
         }
+        Text(
+            "«Без инструментов» есть у ролей с tool-доступом (Переводчик, Редактор, Корректор): описание инструментов " +
+                "не попадает в бриф, вызовы tools не шлются — роль работает одним запросом. В первом полном прогоне " +
+                "tool-цепочки добавляли ~+2 запроса и до 2/3 входных токенов на фрагмент.",
+            fontSize = 12.sp,
+            color = BtPalette.TextSecondary,
+        )
     }
 }
 
