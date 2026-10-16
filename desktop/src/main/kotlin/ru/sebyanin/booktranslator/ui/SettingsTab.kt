@@ -532,6 +532,23 @@ private fun ModelsSection(services: ru.sebyanin.booktranslator.core.AppServices,
 private fun RolesSection(services: ru.sebyanin.booktranslator.core.AppServices, settings: AppSettings) {
     val modelNames = settings.models.map { it.name }
     Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+        Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.padding(top = 4.dp)) {
+            Column(Modifier.weight(1f)) {
+                Text("Общая модель", fontSize = 13.sp)
+                Text(
+                    "Для ролей без собственной привязки; иначе — первая модель в списке.",
+                    fontSize = 11.sp,
+                    color = BtPalette.TextSecondary,
+                )
+            }
+            BtDropdown(
+                options = modelNames,
+                selected = settings.commonModel,
+                onSelect = { selected -> services.updateSettings { s -> s.copy(commonModel = selected) } },
+                placeholder = "— первая модель —",
+                allowEmpty = true,
+            )
+        }
         AgentRole.entries.forEach { role ->
             Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.padding(top = 4.dp)) {
                 Column(Modifier.weight(1f)) {
@@ -548,7 +565,7 @@ private fun RolesSection(services: ru.sebyanin.booktranslator.core.AppServices, 
                             s.copy(roleBindings = bindings)
                         }
                     },
-                    placeholder = "— первая модель —",
+                    placeholder = if (settings.commonModel != null) "— общая —" else "— первая модель —",
                     allowEmpty = true,
                 )
             }

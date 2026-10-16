@@ -105,6 +105,8 @@ data class AppSettings(
     val models: List<LlmModel> = emptyList(),
     /** Привязки roleId → имя модели. */
     val roleBindings: Map<String, String> = emptyMap(),
+    /** Общая модель: фолбэк для ролей без собственной привязки. null = первая модель в списке (как раньше). */
+    val commonModel: String? = null,
     /** LEGACY (schema 1): старые монопрофили. Только для миграции — читаются и сворачиваются в providers+models. */
     val profiles: List<LlmProfile> = emptyList(),
     /** Пусто = <Documents>/BookTranslator. */
@@ -127,6 +129,7 @@ data class AppSettings(
 ) {
     fun profileFor(role: AgentRole): LlmProfile? {
         val byName = roleBindings[role.id]?.let { name -> models.firstOrNull { it.name == name } }
+            ?: commonModel?.let { name -> models.firstOrNull { it.name == name } }
         return (byName ?: models.firstOrNull())?.resolve(providers)
     }
 }
