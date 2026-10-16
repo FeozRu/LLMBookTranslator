@@ -1,5 +1,6 @@
 package ru.sebyanin.booktranslator.core.pipeline
 
+import ru.sebyanin.booktranslator.core.glossary.GlossaryRevision
 import ru.sebyanin.booktranslator.core.glossary.KnowledgeService
 import ru.sebyanin.booktranslator.core.llm.AgentRunner
 import ru.sebyanin.booktranslator.core.llm.LlmClient
@@ -26,7 +27,8 @@ import java.time.LocalDateTime
 
 /**
  * Этап 4: корректор по главе. Пары «перевод+оригинал» чанками ≤criticChunkMaxChars,
- * выход — предложения «было → стало → почему» + СОМНЕНИЯ. Правки применяет человек.
+ * выход — предложения «было → стало → почему» + СОМНЕНИЯ + канал «ГЛОССАРИЙ: [[имя?: …]]»
+ * (термины в очередь глоссария). Правки и канон применяет человек.
  */
 class CriticStage(
     private val store: ProjectStore,
@@ -165,6 +167,7 @@ class CriticStage(
             val parsed = parseSuggestions(result.text, chapterIndex)
             suggestions += parsed.suggestions
             if (parsed.doubts.isNotEmpty()) doubts += parsed.doubts
+            proposeGlossary(projectSlug, chapterIndex, "глава $chapterIndex · корректор", parsed)
         }
 
         // Сквозная нумерация по главе: parseSuggestions нумерует с единицы в каждом
@@ -321,7 +324,8 @@ class CriticStage(
             maxToolCalls = settings.agentTools.maxToolCallsPerFragment,
             sourceLabel = "critic-doubt:$doubtId",
         )
-        val parsed = parseSuggestions(result.text, chapter).suggestions
+        val parsed = parseSuggestions(result.text, chapter)
+        proposeGlossary(projectSlug, chapter, "глава $chapter · правка сомнения", parsed)
 
         val criticFile = criticFile(projectSlug, bookSlug, chapter)
         Files.createDirectories(criticFile.parent)
@@ -332,7 +336,7 @@ class CriticStage(
         } else {
             CriticChapterFile(chapter = chapter)
         }
-        val appended = appendSuggestions(fresh.suggestions, parsed, chapter, translation)
+        val appended = appendSuggestions(fresh.suggestions, parsed.suggestions, chapter, translation)
             .map { it.copy(source = doubtId) }
         val next = fresh.copy(
             suggestions = fresh.suggestions + appended,
@@ -350,13 +354,40 @@ class CriticStage(
         return appended.size
     }
 
+    /** Предложения канала «ГЛОССАРИЙ» — в очередь глоссария (упакованные записи расщепляются; утверждение — за человеком). */
+    private fun proposeGlossary(projectSlug: String, chapter: Int, context: String, parsed: Parsed) {
+        if (parsed.glossary.isEmpty()) return
+        var count = 0
+        parsed.glossary.forEach { p ->
+            GlossaryRevision.splitPacked(p.original, p.translation).forEach { (original, translation) ->
+                knowledge.proposeTerm(
+                    projectSlug,
+                    original = original,
+                    translation = translation,
+                    context = context,
+                    reason = p.reason.ifBlank { "предложено корректором (глава $chapter)" },
+                )
+                count++
+            }
+        }
+        AppLog.info("critic", "Глоссарий, глава $chapter: корректор предложил $count терминов")
+    }
+
     private fun criticFile(projectSlug: String, bookSlug: String, chapter: Int): java.nio.file.Path =
         store.bookDir(projectSlug, bookSlug).resolve("work").resolve("critic").resolve("chapter-%04d.json".format(chapter))
 
-    data class Parsed(val suggestions: List<CriticSuggestion>, val doubts: List<String>)
+    data class Parsed(
+        val suggestions: List<CriticSuggestion>,
+        val doubts: List<String>,
+        val glossary: List<NameProposal> = emptyList(),
+    )
+
+    /** Термин, предложенный корректором каналом «ГЛОССАРИЙ: [[имя?: …]]» — решает человек. */
+    data class NameProposal(val original: String, val translation: String, val reason: String)
 
     companion object {
         private val BULLET_PREFIX = Regex("^[—–•-]\\s*")
+        private val GLOSSARY_LINE = Regex("(?mi)^\\s*ГЛОССАРИЙ:\\s*(.+)$")
 
         /**
          * Правки, пережидающие прогон корректора: сделанные по пометкам переводчика
@@ -385,7 +416,14 @@ class CriticStage(
             val doubts = Regex("СОМНЕНИЯ:?\\s*(.+)", RegexOption.DOT_MATCHES_ALL)
                 .find(text)?.groupValues?.get(1)?.trim().orEmpty()
                 .takeIf { it.isNotEmpty() && !it.equals("нет", true) }
-                ?.let { splitDoubts(it) } ?: emptyList()
+                ?.let { block ->
+                    // Строка ГЛОССАРИЙ в конце ответа (внутрь блока СОМНЕНИЯ) — не сомнение
+                    val cleaned = block.lines()
+                        .filterNot { it.trimStart().startsWith("ГЛОССАРИЙ:") }
+                        .joinToString("\n").trim()
+                    cleaned.takeIf { it.isNotEmpty() }?.let { splitDoubts(it) }
+                }
+                ?: emptyList()
 
             val re = Regex(
                 """\d+\.\s*\[(критично|желательно|по желанию)]\s*\[([^\]]+)]\s*БЫЛО:\s*(.+?)\s*СТАЛО:\s*(.+?)\s*ПОЧЕМУ:\s*(.+?)(?=\n\d+\.|\nИтого|\Z)""",
@@ -409,7 +447,14 @@ class CriticStage(
                     why = m.groupValues[5].trim().lineSequence().firstOrNull() ?: "",
                 )
             }.toList()
-            return Parsed(suggestions, doubts)
+
+            // Канал «ГЛОССАРИЙ: [[имя?: …]]» — термины для очереди глоссария (строки вне формата правок)
+            val glossary = GLOSSARY_LINE.findAll(text).flatMap { line ->
+                DraftStage.NAME_MARKER.findAll(line.groupValues[1]).map { m ->
+                    NameProposal(m.groupValues[1].trim(), m.groupValues[2].trim(), m.groupValues[3].trim())
+                }
+            }.filter { it.original.isNotEmpty() && it.translation.isNotEmpty() }.toList()
+            return Parsed(suggestions, doubts, glossary)
         }
 
         /** Новые правки по сомнению: продолжают нумерацию главы и получают grepCount по текущему переводу. */

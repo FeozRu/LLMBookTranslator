@@ -79,4 +79,61 @@ class CriticDoubtsTest {
         val carried = CriticStage.carryOver(existing)
         assertEquals(listOf("c1-1"), carried.map { it.id })
     }
+
+    @Test
+    fun `канал ГЛОССАРИЙ разбирается в предложения терминов`() {
+        val answer = """
+            1. [желательно] [термин] БЫЛО: «тёмный камергалант» СТАЛО: «канцлер» ПОЧЕМУ: транскрипция титула
+            ГЛОССАРИЙ: [[имя?: 宰相 → канцлер | титул правителя, встречается по всей главе]]
+            Итого предложений: 1
+            СОМНЕНИЯ: нет
+        """.trimIndent()
+        val parsed = CriticStage.parseSuggestions(answer, 1)
+        assertEquals(1, parsed.suggestions.size)
+        val term = parsed.glossary.single()
+        assertEquals("宰相", term.original)
+        assertEquals("канцлер", term.translation)
+        assertEquals("титул правителя, встречается по всей главе", term.reason)
+    }
+
+    @Test
+    fun `несколько строк ГЛОССАРИЙ дают несколько терминов`() {
+        val answer = """
+            ГЛОССАРИЙ: [[имя?: 宰相 → канцлер | титул]]
+            ГЛОССАРИЙ: [[имя?: 魔王 → владыка демонов | враг героя]]
+            ГЛОССАРИЙ: [[имя?: 刀 → клинок]]
+            Итого предложений: 0
+            СОМНЕНИЯ: нет
+        """.trimIndent()
+        val parsed = CriticStage.parseSuggestions(answer, 2)
+        assertEquals(listOf("宰相", "魔王", "刀"), parsed.glossary.map { it.original })
+        assertEquals("клинок", parsed.glossary[2].translation)
+    }
+
+    @Test
+    fun `ГЛОССАРИЙ без маркера или без стрелки - пустой список`() {
+        assertTrue(CriticStage.parseSuggestions("ГЛОССАРИЙ: нет\nСОМНЕНИЯ: нет", 1).glossary.isEmpty())
+        // Маркер требует стрелку «оригинал → вариант» — без неё это не предложение
+        assertTrue(CriticStage.parseSuggestions("ГЛОССАРИЙ: [[имя?: 宰相]]\nСОМНЕНИЯ: нет", 1).glossary.isEmpty())
+    }
+
+    @Test
+    fun `строка ГЛОССАРИЙ в блоке СОМНЕНИЯ не становится сомнением`() {
+        val answer = """
+            Итого предложений: 0
+            СОМНЕНИЯ:
+            — 血の池 передано как «кровавое озеро»; уточнить конвенцию.
+            ГЛОССАРИЙ: [[имя?: 宰相 → канцлер | титул]]
+        """.trimIndent()
+        val parsed = CriticStage.parseSuggestions(answer, 1)
+        assertEquals(1, parsed.doubts.size)
+        assertTrue(parsed.doubts.single().startsWith("血の池"))
+        assertEquals(1, parsed.glossary.size)
+    }
+
+    @Test
+    fun `термин без пояснения получает пустую причину`() {
+        val parsed = CriticStage.parseSuggestions("ГЛОССАРИЙ: [[имя?: 刀 → клинок]]\nСОМНЕНИЯ: нет", 1)
+        assertEquals("", parsed.glossary.single().reason)
+    }
 }
