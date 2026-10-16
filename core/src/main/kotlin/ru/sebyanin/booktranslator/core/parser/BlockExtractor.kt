@@ -87,8 +87,10 @@ object BlockExtractor {
                         tag == "img" -> resolveImage(node.attr("src"))?.let {
                             sb.append(" { [img:").append(it).append("] } ")
                         }
-                        tag == "ruby" -> appendNodes(node.childNodes().filter { c ->
-                            c is Element && c.tagName().lowercase() !in setOf("rt", "rp")
+                        // Основание руби часто записано голым текстом между <rt> — выкидывать можно
+                        // только rt/rp-ЭЛЕМЕНТЫ, текстовые узлы это само слово (конвенции z-lib/Aozora).
+                        tag == "ruby" -> appendNodes(node.childNodes().filterNot { c ->
+                            c is Element && c.tagName().lowercase() in setOf("rt", "rp")
                         }, sb, resolveImage)
                         else -> appendNodes(node.childNodes(), sb, resolveImage)
                     }

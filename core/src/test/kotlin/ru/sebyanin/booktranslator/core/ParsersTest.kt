@@ -114,6 +114,52 @@ class ParsersTest {
         assertEquals("Второй абзац.", blocks[3].text)
     }
 
+    /** Регрессия: основание руби, записанное голым текстом между <rt>, не должно исчезать. */
+    @Test
+    fun `epub parser keeps ruby base text`() {
+        val dir = Files.createTempDirectory("epub-ruby-test")
+        val epub = dir.resolve("book.epub")
+        ZipOutputStream(Files.newOutputStream(epub)).use { zip ->
+            val mime = "application/epub+zip".toByteArray(Charsets.US_ASCII)
+            val entry = ZipEntry("mimetype").apply {
+                method = ZipEntry.STORED
+                size = mime.size.toLong()
+                compressedSize = mime.size.toLong()
+                crc = java.util.zip.CRC32().apply { update(mime) }.value
+            }
+            zip.putNextEntry(entry)
+            zip.write(mime)
+            zip.closeEntry()
+            fun put(path: String, content: String) {
+                zip.putNextEntry(ZipEntry(path))
+                zip.write(content.toByteArray(Charsets.UTF_8))
+                zip.closeEntry()
+            }
+            put("META-INF/container.xml", """<container><rootfile full-path="OEBPS/content.opf"/></container>""")
+            put(
+                "OEBPS/content.opf",
+                """<package xmlns:dc="http://purl.org/dc/elements/1.1/">
+                  |<metadata><dc:title>Руби</dc:title><dc:creator>Автор</dc:creator><dc:language>ja</dc:language></metadata>
+                  |<manifest><item id="c1" href="ch1.xhtml" media-type="application/xhtml+xml"/></manifest>
+                  |<spine><itemref idref="c1"/></spine></package>""".trimMargin(),
+            )
+            // Форма z-lib: основание — текстовые узлы внутри <ruby>; форма Aozora: явный <rb>.
+            put(
+                "OEBPS/ch1.xhtml",
+                """<html><body>
+                  |<p>その隣に<ruby>佇<rt>たたず</rt></ruby>む<ruby>綺<rt>き</rt>麗<rt>れい</rt></ruby>な女性。</p>
+                  |<p><ruby><rb>宰相</rb><rt>そうま</rt></ruby>の<ruby>咳<rt>せき</rt>払<rt>ばら</rt></ruby>いに。</p>
+                  |</body></html>""".trimMargin(),
+            )
+        }
+
+        val book = EpubParser().parse(epub)
+        val texts = book.chapters[0].blocks.map { it.text }
+        assertTrue(texts.contains("その隣に佇む綺麗な女性。"), "текст: $texts")
+        assertTrue(texts.contains("宰相の咳払いに。"), "текст: $texts")
+        assertTrue(texts.none { it.contains("たたず") || it.contains("そうま") }, "фуригана должна выкидываться: $texts")
+    }
+
     /** Реальная тестовая книга из test-data/ (пропускается, если файл не собран). */
     @Test
     fun `epub parser on real test book`() {
