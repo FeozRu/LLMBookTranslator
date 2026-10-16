@@ -137,10 +137,12 @@ fun CriticTab(state: AppState, modifier: Modifier = Modifier) {
     // Отдельный дропдаун здесь не нужен — он дублировал левое меню
     val chapter by state.selectedChapter.collectAsState()
     val ch = chapter ?: 1
-    var selectedId by remember { mutableStateOf<String?>(null) }
+    // bt-проверки: предвыбранная карточка для скриншота контекста (-Dbt.criticSelect=id)
+    val btSelect = remember { System.getProperty("bt.criticSelect") }
+    var selectedId by remember { mutableStateOf<String?>(btSelect) }
 
     // Глава сменилась (левое меню) — выделенная карточка больше не актуальна
-    LaunchedEffect(chapter) { selectedId = null }
+    LaunchedEffect(chapter) { if (btSelect == null) selectedId = null }
 
     // Живой статус этапа: кнопки отправки сомнений и перезапуска гаснут во время работы
     val running by state.runningStage.collectAsState()
@@ -509,6 +511,37 @@ private fun SuggestionCardWithContext(
     val b = state.currentBook.value ?: return
     var status by remember(s.id, s.status) { mutableStateOf(s.status) }
     var errorText by remember(s.id) { mutableStateOf<String?>(null) }
+    // Отказ «встречается N раз, но правка одиночная» — не тупик: показываем override
+    // прямо под ошибкой (для карточек с устаревшим grepCount основная кнопка — «Применить»).
+    // Хранится пара (число вхождений, цель правки) — у вариантов «стало» свои цели
+    var forceOffer by remember(s.id) { mutableStateOf<Pair<Int, CriticSuggestion>?>(null) }
+
+    // Живые места многократной цитаты: grepCount снимался при прогоне корректора
+    // и мог устареть после других правок; для кнопки «всё равно» и списка мест
+    // нужна текущая картина. Одиночные (grepCount <= 1) не сканируем — карточек много.
+    val multiLocations = remember(s.id, status) {
+        if (s.grepCount > 1) state.services.suggestionService.locateAll(p.slug, b.slug, s) else null
+    }
+    val liveCount = multiLocations?.size ?: 0
+
+    // Общий путь применения: force = ручное «везде всё равно» (основная кнопка или
+    // инлайн-offer после отказа); отказ с вхождениями>1 показывает override
+    val applySuggestion: (CriticSuggestion, Boolean) -> Unit = { target, force ->
+        val wasOpen = isSelected
+        when (val outcome = state.services.suggestionService.apply(p.slug, b.slug, target, verify, forceEverywhere = force)) {
+            is SuggestionService.ApplyOutcome.Applied -> {
+                status = "applied"
+                forceOffer = null
+                state.refreshBook()
+                onResolved(s.id, wasOpen)
+            }
+            is SuggestionService.ApplyOutcome.Failed -> {
+                errorText = outcome.reason
+                val n = outcome.forceEverywhereCount ?: 0
+                forceOffer = if (n > 0) n to target else null
+            }
+        }
+    }
 
     Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
         BtCard(
@@ -544,21 +577,15 @@ private fun SuggestionCardWithContext(
                     // с вариантами у каждого варианта своя кнопка (см. ниже)
                     if (s.alternatives.isEmpty()) {
                         BtButton(
-                            if (s.replaceAll && s.grepCount > 1) "Применить везде (${s.grepCount})" else "Применить",
+                            when {
+                                s.replaceAll && s.grepCount > 1 -> "Применить везде (${s.grepCount})"
+                                liveCount > 1 -> "Применить везде ($liveCount) всё равно"
+                                else -> "Применить"
+                            },
                             kind = BtButtonKind.Warning,
                             height = 28.dp,
                             enabled = status == "pending",
-                            onClick = {
-                                val wasOpen = isSelected
-                                when (val outcome = state.services.suggestionService.apply(p.slug, b.slug, s, verify)) {
-                                    is SuggestionService.ApplyOutcome.Applied -> {
-                                        status = "applied"
-                                        state.refreshBook()
-                                        onResolved(s.id, wasOpen)
-                                    }
-                                    is SuggestionService.ApplyOutcome.Failed -> errorText = outcome.reason
-                                }
-                            },
+                            onClick = { applySuggestion(s, liveCount > 1 && !s.replaceAll) },
                         )
                     }
                     Spacer(Modifier.width(6.dp))
@@ -597,23 +624,15 @@ private fun SuggestionCardWithContext(
                             )
                             Spacer(Modifier.width(8.dp))
                             BtButton(
-                                if (s.replaceAll && s.grepCount > 1) "Везде (${s.grepCount})" else "Применить",
+                                when {
+                                    s.replaceAll && s.grepCount > 1 -> "Везде (${s.grepCount})"
+                                    liveCount > 1 -> "Везде всё равно ($liveCount)"
+                                    else -> "Применить"
+                                },
                                 kind = BtButtonKind.Warning,
                                 height = 26.dp,
                                 enabled = status == "pending",
-                                onClick = {
-                                    val wasOpen = isSelected
-                                    when (val outcome = state.services.suggestionService.apply(
-                                        p.slug, b.slug, s.copy(became = variant), verify,
-                                    )) {
-                                        is SuggestionService.ApplyOutcome.Applied -> {
-                                            status = "applied"
-                                            state.refreshBook()
-                                            onResolved(s.id, wasOpen)
-                                        }
-                                        is SuggestionService.ApplyOutcome.Failed -> errorText = outcome.reason
-                                    }
-                                },
+                                onClick = { applySuggestion(s.copy(became = variant), liveCount > 1 && !s.replaceAll) },
                             )
                         }
                     }
@@ -624,17 +643,41 @@ private fun SuggestionCardWithContext(
                 errorText?.let {
                     Text("Не применено: $it", fontSize = 12.sp, color = BtPalette.Warn, modifier = Modifier.padding(top = 4.dp))
                 }
+                forceOffer?.let { (n, target) ->
+                    if (status == "pending") {
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            modifier = Modifier.padding(top = 4.dp),
+                        ) {
+                            Text(
+                                "Цитата встречается $n раз — можно заменить во всех местах:",
+                                fontSize = 12.sp,
+                                color = BtPalette.TextSecondary,
+                                modifier = Modifier.weight(1f),
+                            )
+                            Spacer(Modifier.width(8.dp))
+                            BtButton(
+                                "Применить везде ($n) всё равно",
+                                kind = BtButtonKind.Warning,
+                                height = 26.dp,
+                                onClick = { applySuggestion(target, true) },
+                            )
+                        }
+                    }
+                }
             }
         }
 
-        // Контекст: где это написано
+        // Контекст: где это написано. Одно место — пара «было/стало»;
+        // несколько (пачечная правка или «всё равно») — список всех мест замены
         if (isSelected) {
-            val location = remember(s.id, status) {
-                state.services.suggestionService.locate(p.slug, b.slug, s)
+            val locations = multiLocations ?: remember(s.id, status) {
+                state.services.suggestionService.locateAll(p.slug, b.slug, s)
             }
-            if (location == null) {
-                BtCard { Text("Место не найдено однозначно (цитаты нет или она встречается многократно).", fontSize = 12.sp, color = BtPalette.TextSecondary) }
-            } else {
+            val location = locations.singleOrNull()
+            if (locations.isEmpty()) {
+                BtCard { Text("Место не найдено: цитаты нет в текущем переводе главы.", fontSize = 12.sp, color = BtPalette.TextSecondary) }
+            } else if (location != null) {
                 BtCard(border = BtPalette.AccentBorderLight, contentPadding = PaddingValues(14.dp)) {
                     Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                         Text(
@@ -688,6 +731,33 @@ private fun SuggestionCardWithContext(
                                 maxLines = 4,
                                 overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis,
                             )
+                        }
+                    }
+                }
+            } else {
+                BtCard(border = BtPalette.AccentBorderLight, contentPadding = PaddingValues(14.dp)) {
+                    Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                        Text(
+                            "Встречается ${locations.size} раз — «Применить везде» меняет каждое:",
+                            fontSize = 12.sp,
+                            color = BtPalette.AccentText,
+                        )
+                        locations.forEach { loc ->
+                            Column {
+                                Text(
+                                    "Фрагмент ${loc.fragmentId}, блок ${loc.blockIndex + 1}",
+                                    fontSize = 11.sp,
+                                    color = BtPalette.AccentText,
+                                )
+                                Spacer(Modifier.height(2.dp))
+                                Text(
+                                    if (status == "applied") highlightNeedle(loc.trBlock, s.became, BtPalette.AccentBg)
+                                    else highlightNeedle(loc.trBlock, s.was, BtPalette.WarnHighlight),
+                                    fontSize = 14.sp,
+                                    fontFamily = BtFonts.Book,
+                                    lineHeight = 21.sp,
+                                )
+                            }
                         }
                     }
                 }

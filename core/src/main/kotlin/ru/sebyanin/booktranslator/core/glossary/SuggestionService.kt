@@ -61,19 +61,18 @@ class SuggestionService(private val store: ProjectStore) {
         listOf(raw.trim(), raw.trim('«', '»', '"', ' ').trim()).filter { it.length >= 3 }.distinct()
 
     /**
-     * Поиск контекста для ревью: блок, содержащий «было» (до применения)
-     * или «стало» (после — цитата «было» в переводе уже заменена).
-     * 0 или >1 вхождений → null.
+     * Все блоки главы, где встречается «было» (до применения) или «стало»
+     * (после — цитата «было» в переводе уже заменена). Для пачечных правок:
+     * человек должен видеть каждое место до «Применить везде».
      */
-    fun locate(projectSlug: String, bookSlug: String, suggestion: CriticSuggestion): Location? {
+    fun locateAll(projectSlug: String, bookSlug: String, suggestion: CriticSuggestion): List<Location> {
         val bookDir = store.bookDir(projectSlug, bookSlug)
         val manifest = runCatching {
             ru.sebyanin.booktranslator.core.pipeline.SplitStage.loadManifest(bookDir)
-        }.getOrNull() ?: return null
+        }.getOrNull() ?: return emptyList()
         val wasVariants = variants(suggestion.was)
         val becameVariants = variants(suggestion.became)
-        var found: Location? = null
-        var hits = 0
+        val found = mutableListOf<Location>()
         manifest.parts.filter { it.chapterIndex == suggestion.chapter }.forEach { part ->
             part.fragments.forEach { frag ->
                 val f = bookDir.resolve("work").resolve("fragments").resolve("${frag.id}.json")
@@ -84,14 +83,17 @@ class SuggestionService(private val store: ProjectStore) {
                 texts.forEachIndexed { i, block ->
                     val matched = wasVariants.any { block.contains(it) } || becameVariants.any { block.contains(it) }
                     if (matched) {
-                        hits++
-                        found = Location(frag.id, i, ff.srcBlocks.getOrNull(i) ?: "", block)
+                        found += Location(frag.id, i, ff.srcBlocks.getOrNull(i) ?: "", block)
                     }
                 }
             }
         }
-        return if (hits == 1) found else null
+        return found
     }
+
+    /** Однозначное место: ровно 1 вхождение; 0 или >1 → null. */
+    fun locate(projectSlug: String, bookSlug: String, suggestion: CriticSuggestion): Location? =
+        locateAll(projectSlug, bookSlug, suggestion).singleOrNull()
 
     /**
      * Где термин появился в книге: блок ОРИГИНАЛА с термином (японский — точное
@@ -160,13 +162,19 @@ class SuggestionService(private val store: ProjectStore) {
 
     sealed class ApplyOutcome {
         data class Applied(val suggestion: CriticSuggestion) : ApplyOutcome()
-        data class Failed(val suggestion: CriticSuggestion, val reason: String) : ApplyOutcome()
+        data class Failed(
+            val suggestion: CriticSuggestion,
+            val reason: String,
+            /** Отказ «цитата встречается N раз, но правка одиночная»: N мест для ручного «всё равно»; null = отказ другой природы. */
+            val forceEverywhereCount: Int? = null,
+        ) : ApplyOutcome()
     }
 
     /**
      * Применяет правку: ищет точное «было» в edited-блоках фрагментов главы.
-     * Одиночная правка требует ровно 1 вхождение; пачечная (replaceAll) заменяет
-     * ВСЕ вхождения — транзакционно: сначала проверка каждого затронутого фрагмента,
+     * Одиночная правка требует ровно 1 вхождение; пачечная (replaceAll или
+     * forceEverywhere — ручной override человека) заменяет ВСЕ вхождения —
+     * транзакционно: сначала проверка каждого затронутого фрагмента,
      * запись только если все проверки прошли (никаких молчаливых пачек).
      */
     fun apply(
@@ -174,6 +182,7 @@ class SuggestionService(private val store: ProjectStore) {
         bookSlug: String,
         suggestion: CriticSuggestion,
         verify: VerifyEngine,
+        forceEverywhere: Boolean = false,
     ): ApplyOutcome {
         val bookDir = store.bookDir(projectSlug, bookSlug)
         val manifest = SplitStage.loadManifest(bookDir)
@@ -199,14 +208,14 @@ class SuggestionService(private val store: ProjectStore) {
             }
         }
 
-        val isBatch = suggestion.replaceAll && hits.size > 1
+        val isBatch = hits.size > 1 && (suggestion.replaceAll || forceEverywhere)
         if (hits.isEmpty() || (!isBatch && hits.size != 1)) {
             val reason = when {
                 hits.isEmpty() -> "цитата «было» не найдена в переводе"
                 else -> "цитата встречается ${hits.size} раз, но правка одиночная (нужно ровно 1; для всех мест модель должна пометить «ВЕЗДЕ: да»)"
             }
             AppLog.warn("suggestions", "Правка ${suggestion.id} не применена: $reason")
-            return ApplyOutcome.Failed(suggestion, reason)
+            return ApplyOutcome.Failed(suggestion, reason, forceEverywhereCount = hits.size.takeIf { hits.size > 1 })
         }
 
         // Правки в памяти по затронутым фрагментам
@@ -240,7 +249,8 @@ class SuggestionService(private val store: ProjectStore) {
         }
         val applied = updateSuggestion(projectSlug, bookSlug, suggestion.id) { it.copy(status = "applied") }
         if (isBatch) {
-            AppLog.info("suggestions", "Правка ${suggestion.id} применена ВЕЗДЕ: ${hits.size} мест (${affected.keys.joinToString()})")
+            val how = if (suggestion.replaceAll) "ВЕЗДЕ" else "ВЕЗДЕ (принудительно, без метки модели)"
+            AppLog.info("suggestions", "Правка ${suggestion.id} применена $how: ${hits.size} мест (${affected.keys.joinToString()})")
         } else {
             AppLog.info("suggestions", "Правка ${suggestion.id} применена (${hits.first().fragId}, блок ${hits.first().blockIdx + 1})")
         }
