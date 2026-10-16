@@ -39,8 +39,10 @@ import androidx.compose.ui.unit.sp
 import ru.sebyanin.booktranslator.AppState
 import ru.sebyanin.booktranslator.core.glossary.GlossaryRevision
 import ru.sebyanin.booktranslator.core.glossary.SuggestionService
+import ru.sebyanin.booktranslator.core.glossary.TermReplacer
 import ru.sebyanin.booktranslator.core.log.AppLog
 import ru.sebyanin.booktranslator.core.log.LogLevel
+import ru.sebyanin.booktranslator.core.model.AgentRole
 import ru.sebyanin.booktranslator.core.model.CriticChapterFile
 import ru.sebyanin.booktranslator.core.model.CriticSuggestion
 import ru.sebyanin.booktranslator.core.model.GlossaryEntry
@@ -48,6 +50,8 @@ import ru.sebyanin.booktranslator.core.model.GlossaryRevisionDecision
 import ru.sebyanin.booktranslator.core.model.KnowledgeNote
 import ru.sebyanin.booktranslator.core.pipeline.TranslatorDoubt
 import ru.sebyanin.booktranslator.core.pipeline.TranslatorDoubts
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 import ru.sebyanin.booktranslator.ui.components.BtButton
 import ru.sebyanin.booktranslator.ui.components.BtButtonKind
 import ru.sebyanin.booktranslator.ui.components.BtCard
@@ -842,6 +846,9 @@ fun GlossaryTab(state: AppState, modifier: Modifier = Modifier) {
     var query by remember { mutableStateOf("") }
 
     Column(modifier.padding(12.dp)) {
+        // Оффер «канонический перевод термина изменился — перенести в текст?»
+        // (утверждение альтернативы, правка в «Терминах», «Поправить на» ревизора)
+        TermReplaceBanner(state)
         val proposedCount = glossary.count { it.status == "proposed" } + notes.count { it.status == "proposed" }
         BtTabs(
             tabs = listOf(
@@ -868,6 +875,135 @@ fun GlossaryTab(state: AppState, modifier: Modifier = Modifier) {
             0 -> ProposalsList(state, glossary, notes, query)
             1 -> TermsList(state, glossary, query)
             2 -> NotesList(state, notes, query)
+        }
+    }
+}
+
+/**
+ * Банер «Замена термина в переводе»: слой 1 — точная замена старого варианта
+ * везде (бесплатно, транзакционно), слой 2 — прогон модели по фрагментам,
+ * где слово встречается в любой форме (склонения). Скан книги — на IO;
+ * criticVersion в ключах: после замены/прогона данные на диске обновились,
+ * пересканируем (оба нуля — оффер снимается сам: менять нечего).
+ */
+@Composable
+private fun TermReplaceBanner(state: AppState) {
+    val offer by state.termReplaceOffer.collectAsState()
+    val o = offer ?: return
+    val p = state.currentProject.value ?: return
+    val b = state.currentBook.value ?: return
+    val cv by state.criticVersion.collectAsState()
+    val running by state.runningStage.collectAsState()
+    var scan by remember(p.slug, b.slug, o.from, o.to, cv) {
+        mutableStateOf<TermReplacer.Scan?>(null)
+    }
+    var result by remember(o.from, o.to) { mutableStateOf<String?>(null) }
+    // Что будет заменено: немного мест — показать сразу, много — за кнопкой
+    var showAllPlaces by remember(o.from, o.to) { mutableStateOf(false) }
+    LaunchedEffect(p.slug, b.slug, o.from, o.to, cv) {
+        val s = withContext(Dispatchers.IO) { state.services.termReplacer.scan(p.slug, b.slug, o.from) }
+        scan = s
+        if (s.occurrences == 0 && s.stemFragmentIds.isEmpty()) state.termReplaceOffer.value = null
+    }
+    val s = scan ?: return
+    val profile = remember { state.services.settings.value.profileFor(AgentRole.TERM_FIX) }
+
+    BtCard(border = BtPalette.AccentBorderLight, contentPadding = PaddingValues(14.dp)) {
+        Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                SectionCaption("ЗАМЕНА ТЕРМИНА В ПЕРЕВОДЕ", Modifier.weight(1f))
+                BtButton("Скрыть", height = 26.dp, onClick = { state.termReplaceOffer.value = null })
+            }
+            Text("«${o.from}» → «${o.to}»", fontSize = 14.sp, fontWeight = FontWeight.SemiBold)
+            if (s.occurrences > 0) {
+                Text(
+                    "Точных вхождений: ${s.occurrences} в ${s.fragmentIds.size} фрагментах — точная замена бесплатна и проверяется автоматически.",
+                    fontSize = 12.sp,
+                    color = BtPalette.TextSecondary,
+                )
+            } else {
+                Text("Точных вхождений не осталось.", fontSize = 12.sp, color = BtPalette.TextSecondary)
+            }
+            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                if (s.occurrences > 0) {
+                    BtButton(
+                        "Заменить везде (${s.occurrences})",
+                        kind = BtButtonKind.Primary,
+                        height = 28.dp,
+                        onClick = {
+                            state.replaceTermEverywhere(o.from, o.to) { outcome ->
+                                result = when (outcome) {
+                                    is TermReplacer.ReplaceOutcome.Done ->
+                                        "Заменено: ${outcome.replaced} вхождений в ${outcome.fragments.size} фрагментах"
+                                    is TermReplacer.ReplaceOutcome.Failed ->
+                                        "Не заменено: ${outcome.reason}"
+                                }
+                            }
+                        },
+                    )
+                }
+                if (s.stemFragmentIds.isNotEmpty()) {
+                    BtButton(
+                        "Прогнать модель по формам (${s.stemFragmentIds.size} фрагм.)",
+                        kind = if (s.occurrences > 0) BtButtonKind.Ghost else BtButtonKind.Primary,
+                        height = 28.dp,
+                        enabled = running == null,
+                        onClick = { state.runTermFix(o.from, o.to, s.stemFragmentIds) },
+                    )
+                }
+            }
+            if (s.stemFragmentIds.isNotEmpty()) {
+                Text(
+                    "Модель меняет склонения («Карла»/«Карлы»/«Карле») только в ${s.stemFragmentIds.size} затронутых фрагментах" +
+                        (profile?.let { "; модель роли «Замена термина»: ${it.name}" }
+                            ?: "; модели нет — настройте роль в Настройках"),
+                    fontSize = 11.sp,
+                    color = BtPalette.Muted,
+                )
+            }
+            // Что будет заменено: каждое точное вхождение, как у корректора в «ВЕЗДЕ»
+            if (s.occurrences > 0) {
+                val fewPlaces = s.exact.size <= 8
+                val expanded = fewPlaces || showAllPlaces
+                if (!fewPlaces) {
+                    BtButton(
+                        if (showAllPlaces) "Скрыть места (${s.occurrences})" else "Показать все места (${s.occurrences})",
+                        height = 26.dp,
+                        active = showAllPlaces,
+                        onClick = { showAllPlaces = !showAllPlaces },
+                    )
+                }
+                if (expanded) {
+                    Text(
+                        "«Заменить везде» меняет каждое вхождение:",
+                        fontSize = 12.sp,
+                        color = BtPalette.AccentText,
+                    )
+                    s.exact.forEach { hit ->
+                        Column {
+                            Text(
+                                "Фрагмент ${hit.fragmentId}, блок ${hit.blockIndex + 1}" +
+                                    (if (hit.count > 1) " · вхождений: ${hit.count}" else ""),
+                                fontSize = 11.sp,
+                                color = BtPalette.AccentText,
+                            )
+                            Text(
+                                highlightNeedle(hit.text, o.from, BtPalette.WarnHighlight, minLen = 2),
+                                fontSize = 14.sp,
+                                fontFamily = BtFonts.Book,
+                                lineHeight = 21.sp,
+                            )
+                        }
+                    }
+                }
+            }
+            result?.let {
+                Text(
+                    it,
+                    fontSize = 12.sp,
+                    color = if (it.startsWith("Не заменено")) BtPalette.Warn else BtPalette.SuccessDark,
+                )
+            }
         }
     }
 }

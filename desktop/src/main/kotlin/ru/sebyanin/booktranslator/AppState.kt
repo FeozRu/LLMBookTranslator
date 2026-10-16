@@ -1,6 +1,7 @@
 package ru.sebyanin.booktranslator
 
 import ru.sebyanin.booktranslator.core.glossary.GlossaryRevision
+import ru.sebyanin.booktranslator.core.glossary.TermReplacer
 import ru.sebyanin.booktranslator.core.AppServices
 import ru.sebyanin.booktranslator.core.log.AppLog
 import ru.sebyanin.booktranslator.core.log.LogEvent
@@ -39,6 +40,9 @@ data class ChapterUi(
     val questions: Int = 0,
 )
 
+/** Оффер «заменить старый вариант термина в переведённом тексте»: канонический перевод сменился с from на to. */
+data class TermReplaceOffer(val from: String, val to: String)
+
 /** Живое состояние UI: проекты → книги → главы/этапы; действия пользователя. */
 class AppState(val services: AppServices, private val scope: CoroutineScope) {
 
@@ -75,6 +79,9 @@ class AppState(val services: AppServices, private val scope: CoroutineScope) {
      */
     val glossaryRevisionVersion = MutableStateFlow(0)
 
+    /** Оффер замены термина в переведённом тексте; снимается кнопкой или сам, когда менять нечего. */
+    val termReplaceOffer = MutableStateFlow<TermReplaceOffer?>(null)
+
     private var stageJob: Job? = null
 
     init {
@@ -90,6 +97,19 @@ class AppState(val services: AppServices, private val scope: CoroutineScope) {
         // Отладка: -Dbt.stage="draft" сеет идущий этап — проверить маскота/статус
         // «Выполняется…» без реального прогона (кнопка «Остановить» не нажимать)
         System.getProperty("bt.stage")?.let { runningStage.value = it }
+        // Отладка: -Dbt.termOffer="паутина|нить" сеет оффер замены термина — банер
+        // в Глоссарии без правки канона (нужен bt.dataRoot с сид-книгой, где слово есть).
+        // Кириллица через шелл искажается — есть файловый вариант bt.termOfferFile (UTF-8)
+        fun seedTermOffer(raw: String) {
+            val parts = raw.trim().split("|").map { it.trim() }
+            if (parts.size >= 2 && parts[0].isNotBlank() && parts[1].isNotBlank()) {
+                termReplaceOffer.value = TermReplaceOffer(from = parts[0], to = parts[1])
+            }
+        }
+        System.getProperty("bt.termOffer")?.let { seedTermOffer(it) }
+        System.getProperty("bt.termOfferFile")?.let { p ->
+            runCatching { Files.readString(Path.of(p)) }.getOrNull()?.let { seedTermOffer(it) }
+        }
     }
 
     // ---------- навигация ----------
@@ -333,6 +353,59 @@ class AppState(val services: AppServices, private val scope: CoroutineScope) {
         }
     }
 
+    /**
+     * Слой 1 замены термина: механическая транзакционная замена точных вхождений
+     * старого варианта по всей книге (без LLM). Результат — в колбэк для банера.
+     */
+    fun replaceTermEverywhere(from: String, to: String, onDone: (TermReplacer.ReplaceOutcome) -> Unit = {}) {
+        val p = currentProject.value ?: return
+        val b = currentBook.value ?: return
+        scope.launch {
+            val outcome = withContext(Dispatchers.IO) {
+                runCatching { services.termReplacer.replaceEverywhere(p.slug, b.slug, from, to, services.verifyFor(p.slug)) }
+                    .getOrElse { TermReplacer.ReplaceOutcome.Failed(it.message ?: it.toString()) }
+            }
+            // Фрагменты правились на диске — рабочая зона и критик должны увидеть свежий текст
+            refreshBook()
+            // Итог — и в статус: банер может сняться сам, когда менять больше нечего
+            message.value = when (outcome) {
+                is TermReplacer.ReplaceOutcome.Done ->
+                    "Замена термина: ${outcome.replaced} вхождений в ${outcome.fragments.size} фрагментах"
+                is TermReplacer.ReplaceOutcome.Failed ->
+                    "Замена термина не выполнена: ${outcome.reason}"
+            }
+            onDone(outcome)
+        }
+    }
+
+    /**
+     * Слой 2 замены термина: LLM-прогон «замени формы X → Y» только по фрагментам,
+     * где слово встречается (id целей — из скана банера). Полный перезапуск
+     * редактуры не запускается.
+     */
+    fun runTermFix(from: String, to: String, targets: List<String>) {
+        val p = currentProject.value ?: return
+        val b = currentBook.value ?: return
+        if (targets.isEmpty()) {
+            message.value = "Фрагментов с формами термина не найдено — прогон модели не нужен"
+            return
+        }
+        runStage("termfix") {
+            stageProgress.value = "замена термина: 0/${targets.size} фрагментов"
+            withContext(Dispatchers.IO) {
+                services.termFixer.run(p.slug, b.slug, from, to, targets, services.verifyFor(p.slug)) { done, tot ->
+                    stageProgress.value = "замена термина: $done/$tot фрагментов"
+                }
+            }.let { s ->
+                message.value = buildString {
+                    append("Замена форм термина по модели: изменено ${s.changed} из ${s.fragments} фрагментов")
+                    if (s.unchanged > 0) append(", без форм: ${s.unchanged}")
+                    if (s.failed > 0) append(", ошибок: ${s.failed} — можно повторить прогон")
+                }
+            }
+        }
+    }
+
     fun assembleCurrentChapter() {
         val p = currentProject.value ?: return
         val b = currentBook.value ?: return
@@ -457,6 +530,12 @@ class AppState(val services: AppServices, private val scope: CoroutineScope) {
     fun approveTerm(entry: GlossaryEntry, translation: String) {
         val p = currentProject.value ?: return
         services.knowledge.approveTerm(p.slug, entry.original, translation)
+        // Канонический перевод изменился — предложить перенос изменения в текст
+        // (банер «Замена термина»): утверждение альтернативы, правка в «Терминах»,
+        // «Поправить на» у ревизора — все пути через approveTerm
+        if (translation.isNotBlank() && translation != entry.translation) {
+            termReplaceOffer.value = TermReplaceOffer(from = entry.translation, to = translation)
+        }
         refreshKnowledge()
     }
 

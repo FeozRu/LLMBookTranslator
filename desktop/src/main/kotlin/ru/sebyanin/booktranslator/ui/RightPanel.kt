@@ -166,6 +166,7 @@ private fun stageTitle(stage: String): String = when (stage) {
     "edit" -> "редактура"
     "critic" -> "корректор"
     "revisor" -> "ревизор"
+    "termfix" -> "замена термина"
     "assemble" -> "сборка главы"
     "import" -> "импорт"
     "qa" -> "QA"

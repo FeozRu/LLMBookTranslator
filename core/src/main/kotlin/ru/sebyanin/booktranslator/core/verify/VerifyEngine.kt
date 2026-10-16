@@ -129,11 +129,22 @@ class VerifyEngine(private val preset: String) {
             ratioAsWarning = true,
         )
 
-        fun editedOptions(ratioCorridor: ClosedFloatingPointRange<Double>? = 1.1..3.0): Options = Options(
-            residualCheck = true,
-            stripMarkers = false,
-            ratioCorridor = ratioCorridor,
-        )
+    fun editedOptions(ratioCorridor: ClosedFloatingPointRange<Double>? = 1.1..3.0): Options = Options(
+        residualCheck = true,
+        stripMarkers = false,
+        ratioCorridor = ratioCorridor,
+    )
+
+    /**
+     * Механическая точечная правка (замена термина, снятие пометки): остатки
+     * исходника, якоря и блоки 1:1; без коридора длин — правка не переписывает
+     * текст, длина смещается ровно на размер замены.
+     */
+    fun termReplaceOptions(stripMarkers: Boolean): Options = Options(
+        residualCheck = true,
+        stripMarkers = stripMarkers,
+        ratioCorridor = null,
+    )
 
         fun finalOptions(): Options = Options(
             residualCheck = true,

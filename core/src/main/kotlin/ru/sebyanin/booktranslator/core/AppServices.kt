@@ -46,6 +46,11 @@ class AppServices private constructor(
     val glossaryRevisor = ru.sebyanin.booktranslator.core.glossary.GlossaryRevisor(
         projectStore, promptStore, knowledge, llm, { _settings.value },
     )
+    // Замена термина в переведённом тексте: слой 1 — механика, слой 2 — LLM-прогон форм
+    val termReplacer = ru.sebyanin.booktranslator.core.glossary.TermReplacer(projectStore)
+    val termFixer = ru.sebyanin.booktranslator.core.glossary.TermFixer(
+        projectStore, promptStore, llm, { _settings.value },
+    )
     val alignSearch = ru.sebyanin.booktranslator.core.align.AlignSearch(projectStore)
     val epubBuilder = ru.sebyanin.booktranslator.core.builder.EpubBuilder(projectStore)
     val fb2Builder = ru.sebyanin.booktranslator.core.builder.Fb2Builder(projectStore)
