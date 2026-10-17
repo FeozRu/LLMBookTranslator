@@ -195,9 +195,6 @@ fun CriticTab(state: AppState, modifier: Modifier = Modifier) {
     val btSelect = remember { System.getProperty("bt.criticSelect") }
     var selectedId by remember { mutableStateOf<String?>(btSelect) }
 
-    // Глава сменилась (левое меню или прокрутка) — выделенная карточка больше не актуальна
-    LaunchedEffect(chapter) { if (btSelect == null) selectedId = null }
-
     // Живой статус этапа: кнопки отправки сомнений и перезапуска гаснут во время работы
     val running by state.runningStage.collectAsState()
     // Сомнение, отправленное корректору на разбор (пока этап не завершится)
@@ -249,6 +246,14 @@ fun CriticTab(state: AppState, modifier: Modifier = Modifier) {
         onSpyChapter = { c -> if (state.selectedChapter.value != c) state.selectedChapter.value = c },
     )
 
+    // Глава сменилась ВНЕШНЕ (левое меню, «К ревью») — выделенная карточка больше не
+    // актуальна. Смена главы прокруткой выделение не трогает: spyChapter spy пишет ДО
+    // selectedChapter, так что на момент этого эффекта совпадение с ним означает
+    // «граница главы проехала при прокрутке» — контекст открытой карточки остаётся
+    LaunchedEffect(chapter) {
+        if (btSelect == null && chapter != cw.spyChapter) selectedId = null
+    }
+
     // bt-проверка бесшовности корректора: -Dbt.wsScrollIntoChapter=<N> (с -Dbt.tab=critic)
     var btScrolledTo by remember { mutableStateOf<Int?>(null) }
     LaunchedEffect(rowsData) {
@@ -262,6 +267,8 @@ fun CriticTab(state: AppState, modifier: Modifier = Modifier) {
         val first = rowsData.rows.indexOfFirst { it.chapter == into }
         val last = rowsData.rows.indexOfLast { it.chapter == into }
         cw.listState.scrollToItem((first + 3).coerceAtMost(last))
+        // сид карточки — ПОСЛЕ прыжка: внешняя смена главы выше сбросила бы его
+        System.getProperty("bt.criticSelect")?.let { selectedId = it }
     }
 
     val currentSection = rowsData.sections[ch]

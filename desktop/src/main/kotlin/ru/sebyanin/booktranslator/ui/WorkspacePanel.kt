@@ -131,9 +131,16 @@ fun WorkspacePanel(state: AppState, modifier: Modifier = Modifier) {
     // Ручной редактор блока: клик по правой карточке. bt-флаги для скриншотов:
     // -Dbt.blockEdit=<индекс> открывает редактор, -Dbt.blockEditSel="a:b" сеет выделение
     var editingAt by remember { mutableStateOf<Pair<Int, Int>?>(null) } // (глава, блок)
+    // Смена главы прокруткой редактор не закрывает — граница главы проехала под ним,
+    // набранный текст не теряем; внешняя навигация и смена версии закрывают как раньше
+    var prevEditChapter by remember { mutableStateOf(ch) }
     LaunchedEffect(ch, version) {
-        editingAt = null
-        System.getProperty("bt.blockEdit")?.toIntOrNull()?.takeIf { it >= 0 }?.let { editingAt = ch to it }
+        val scrolled = ch != prevEditChapter && ch == cw.spyChapter
+        prevEditChapter = ch
+        if (!scrolled) {
+            editingAt = null
+            System.getProperty("bt.blockEdit")?.toIntOrNull()?.takeIf { it >= 0 }?.let { editingAt = ch to it }
+        }
     }
     var fieldValue by remember(editingAt) {
         val t = editingAt
