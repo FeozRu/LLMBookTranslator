@@ -139,11 +139,11 @@ class BlockEditorTest {
         val store = store()
         writeFragment(store, FragmentFile(id = "f1", srcBlocks = srcBlocks, editedBlocks = editedBlocks))
         val before = readFragment(store, "f1")
-        // Правка блока 0 сама по себе безобидна, но удалит якорь из блока 1 нельзя —
-        // здесь она просто оставляет якорь на месте; ломаем ДРУГОЙ способ: правим блок 1
+        // Якорь изображения руками не правится: guard отклоняет правку ДО verify,
+        // имя файла внутри { [img:…] } меняется только «Заменить изображение»
         val error = editor(store).saveEdit("test", "b", BlockEditor.BlockRef("f1", 1, fromEdited = true), "якорь стёрли")
         assertNotNull(error)
-        assertTrue(error!!.contains("якоря"), "в причине должен быть якорный сбой: $error")
+        assertTrue(error!!.contains("нельзя"), "ручная правка якоря должна отклоняться: $error")
         assertEquals(before, readFragment(store, "f1"))
     }
 

@@ -37,6 +37,25 @@ class BlockEditor(
         /** Тот же формат, что разбирают билдеры EPUB/FB2. */
         val NOTE_MARKER_RE = Regex("\\{ \\[note:(.+?)] }")
 
+        /** Якорь изображения { [img:…] } — полной строкой или внутри текстового блока. */
+        val IMG_MARKER_RE = Regex("\\{ \\[img:[^]]+] }")
+
+        /**
+         * Ручная правка не должна менять якоря изображений: имя файла внутри маркера
+         * меняется только «Заменить изображение» (файл загружается в images/ проекта,
+         * иначе в сборку попадает ссылка на несуществующую картинку).
+         */
+        fun imageMarkersUnchanged(old: String, new: String): Boolean =
+            IMG_MARKER_RE.findAll(old).map { it.value }.toList() ==
+                IMG_MARKER_RE.findAll(new).map { it.value }.toList()
+
+        /** Плоское безопасное имя файла картинки: путь снимается, символы вне букв/цифр/._- → «_». */
+        fun safeImageName(raw: String): String {
+            val base = raw.substringAfterLast('/').substringAfterLast('\\')
+            val cleaned = base.replace(Regex("[^\\p{L}\\p{N}._-]"), "_").trim('_', '.')
+            return cleaned.ifEmpty { "image" }
+        }
+
         /**
          * Маркер примечания вставляется сразу после выделения (пробел-разделитель
          * добавляется). Пустое примечание или пустое выделение — текст без изменений.
@@ -78,6 +97,9 @@ class BlockEditor(
         if (ref.blockIndex !in field.indices) return "блок ${ref.blockIndex + 1} исчез из фрагмента ${ref.fragmentId}"
         val block = normalizeBlock(newText)
         if (block == field[ref.blockIndex]) return null // текст не изменился — писать нечего
+        if (!imageMarkersUnchanged(field[ref.blockIndex], block)) {
+            return "якорь { [img:…] } вручную править нельзя — используйте «Заменить изображение»"
+        }
         val updatedBlocks = field.mapIndexed { i, b -> if (i == ref.blockIndex) block else b }
 
         val preset = runCatching { store.loadProject(projectSlug).preset }.getOrDefault("generic")
@@ -96,6 +118,69 @@ class BlockEditor(
         else file.copy(draftBlocks = updatedBlocks, verifyDraft = vr.summary())
         ProjectStore.atomicWrite(fragsDir.resolve("${file.id}.json"), AppJson.encodeToString(FragmentFile.serializer(), updated))
         AppLog.info("editor", "Правка блока сохранена (${ref.fragmentId}, блок ${ref.blockIndex + 1}${if (ref.fromEdited) ", редактура" else ", черновик"})")
+        return null
+    }
+
+    /**
+     * Загрузка картинки в проект: копия файла в images/ книги под плоским безопасным
+     * именем. Совпадающее по содержимому имя переиспользуется; занятое другим
+     * содержимым — получает суффикс «-2», «-3»… Возвращает имя для якоря.
+     */
+    fun importImage(projectSlug: String, bookSlug: String, source: java.nio.file.Path): String {
+        val imagesDir = store.bookDir(projectSlug, bookSlug).resolve("images")
+        java.nio.file.Files.createDirectories(imagesDir)
+        val name = safeImageName(source.fileName.toString())
+        val existing = imagesDir.resolve(name)
+        if (java.nio.file.Files.isRegularFile(existing) &&
+            java.nio.file.Files.mismatch(source, existing) == -1L
+        ) {
+            return name
+        }
+        val stem = name.substringBeforeLast('.')
+        val ext = name.substringAfterLast('.', "")
+        var candidate = name
+        var n = 2
+        while (java.nio.file.Files.exists(imagesDir.resolve(candidate))) {
+            candidate = if (ext.isEmpty()) "$stem-$n" else "$stem-$n.$ext"
+            n++
+        }
+        java.nio.file.Files.copy(source, imagesDir.resolve(candidate))
+        AppLog.info("editor", "Картинка загружена в проект: $candidate")
+        return candidate
+    }
+
+    /**
+     * Замена изображения в якоре блока: маркеры { [img:…] } блока получают новое
+     * плоское имя (загруженное [importImage]), текст вокруг не трогается; verify
+     * тот же, что у ручной правки. null = успех, иначе причина и файл не тронут.
+     */
+    fun replaceImage(projectSlug: String, bookSlug: String, ref: BlockRef, imageName: String): String? {
+        val fragsDir = store.bookDir(projectSlug, bookSlug).resolve("work").resolve("fragments")
+        val file = runCatching {
+            AppJson.decodeFromString(FragmentFile.serializer(), Files.readString(fragsDir.resolve("${ref.fragmentId}.json")))
+        }.getOrNull() ?: return "фрагмент ${ref.fragmentId} не читается"
+        val field = if (ref.fromEdited) file.editedBlocks else file.draftBlocks
+        if (ref.blockIndex !in field.indices) return "блок ${ref.blockIndex + 1} исчез из фрагмента ${ref.fragmentId}"
+        val block = field[ref.blockIndex]
+        if (!IMG_MARKER_RE.containsMatchIn(block)) return "в блоке нет якоря изображения"
+        val updatedBlock = IMG_MARKER_RE.replace(block) { "{ [img:$imageName] }" }
+        if (updatedBlock == block) return null
+        val updatedBlocks = field.mapIndexed { i, b -> if (i == ref.blockIndex) updatedBlock else b }
+
+        val preset = runCatching { store.loadProject(projectSlug).preset }.getOrDefault("generic")
+        val verify = VerifyEngine(preset)
+        val options = if (ref.fromEdited) {
+            VerifyEngine.Options(residualCheck = true, stripMarkers = false, ratioCorridor = null)
+        } else {
+            VerifyEngine.draftOptions()
+        }
+        val vr = verify.verifyTranslation(file.srcBlocks, updatedBlocks, options)
+        if (!vr.ok) return "verify: ${vr.summary()}"
+
+        val updated = if (ref.fromEdited) file.copy(editedBlocks = updatedBlocks, verifyEdited = vr.summary())
+        else file.copy(draftBlocks = updatedBlocks, verifyDraft = vr.summary())
+        ProjectStore.atomicWrite(fragsDir.resolve("${file.id}.json"), AppJson.encodeToString(FragmentFile.serializer(), updated))
+        AppLog.info("editor", "Якорь изображения заменён на $imageName (${ref.fragmentId}, блок ${ref.blockIndex + 1})")
         return null
     }
 

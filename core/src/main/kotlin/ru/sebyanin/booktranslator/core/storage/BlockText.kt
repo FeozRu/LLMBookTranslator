@@ -21,7 +21,7 @@ object BlockText {
 
     const val SEPARATOR_LINE = "◇　◇　◇"
     private val SEP_RE = Regex("^◇(　◇)*$")
-    private val IMG_RE = Regex("^\\{ \\[img:[^]]+] }$")
+    private val IMG_RE = Regex("^\\{ \\[img:([^]]+)] }$")
 
     fun encode(blocks: List<ChapterBlock>): String =
         blocks.joinToString("\n") { b ->

@@ -288,10 +288,43 @@ fun WorkspacePanel(state: AppState, modifier: Modifier = Modifier) {
                                 )
                                 BtButton("Отмена", onClick = { editingIdx = null }, enabled = running == null, height = 30.dp)
                                 Text(
-                                    "переносы строк при сохранении станут пробелами; якоря { [img:…] } не трогать",
+                                    "переносы строк при сохранении станут пробелами; якоря { [img:…] } меняются только через «Заменить изображение»",
                                     fontSize = 11.sp,
                                     color = BtPalette.Muted,
                                 )
+                            }
+                        }
+                    } else if (t != null && BlockEditor.IMG_MARKER_RE.containsMatchIn(t)) {
+                        // Якорь изображения: ручная правка текста запрещена, картинка
+                        // меняется загрузкой файла в images/ проекта
+                        BtCard(
+                            modifier = Modifier.weight(1f),
+                            border = BtPalette.AccentBorderLight,
+                            contentPadding = PaddingValues(horizontal = 14.dp, vertical = 10.dp),
+                        ) {
+                            Column {
+                                Text(
+                                    t,
+                                    fontFamily = BtFonts.Book,
+                                    fontSize = previewFs.sp,
+                                    lineHeight = (previewFs * 22f / 14f).sp,
+                                )
+                                if (ref != null) {
+                                    Spacer(Modifier.height(8.dp))
+                                    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                                        BtButton(
+                                            "Заменить изображение…",
+                                            onClick = { state.replaceBlockImage(ref, ch) },
+                                            enabled = running == null,
+                                            height = 30.dp,
+                                        )
+                                        Text(
+                                            "файл копируется в images/ проекта; маркер руками не правится",
+                                            fontSize = 11.sp,
+                                            color = BtPalette.Muted,
+                                        )
+                                    }
+                                }
                             }
                         }
                     } else {

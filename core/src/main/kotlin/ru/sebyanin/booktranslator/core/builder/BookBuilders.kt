@@ -79,7 +79,9 @@ class EpubBuilder(private val store: ProjectStore) {
                     }
                     BlockKind.SEPARATOR -> body.append("<p class=\"scene\">◇　◇　◇</p>\n")
                     BlockKind.IMAGE -> {
-                        val img = BlockText.imageFileOf(block) ?: return@forEach
+                        // Якорь может хранить исходный путь из EPUB («item/image/k002.jpg») —
+                        // в images/ книги лежат плоские имена, ссылка и manifest должны совпадать
+                        val img = BlockText.imageFileOf(block)?.substringAfterLast('/') ?: return@forEach
                         body.append("<div><img src=\"images/").append(esc(img)).append("\" alt=\"иллюстрация\"/></div>\n")
                     }
                     BlockKind.COMMENT -> Unit // шапки-комментарии в финальную книгу не идут
@@ -199,6 +201,7 @@ ${chapterFiles.joinToString("\n") { "    <itemref idref=\"" + it.removeSuffix(".
         "png" -> "image/png"
         "gif" -> "image/gif"
         "svg" -> "image/svg+xml"
+        "webp" -> "image/webp"
         else -> "application/octet-stream"
     }
 
@@ -248,7 +251,8 @@ class Fb2Builder(private val store: ProjectStore) {
                     BlockKind.HEADING -> Unit // заголовок секции уже в <title>
                     BlockKind.SEPARATOR -> body.append("<empty-line/>\n")
                     BlockKind.COMMENT -> Unit
-                    BlockKind.IMAGE -> BlockText.imageFileOf(b)?.let { img ->
+                    BlockKind.IMAGE -> BlockText.imageFileOf(b)?.let { raw ->
+                        val img = raw.substringAfterLast('/')
                         body.append("<image l:href=\"#img-").append(img.substringBeforeLast('.')).append("\"/>")
                     }
                     BlockKind.TEXT -> {
@@ -310,6 +314,7 @@ $binaries
         "jpg", "jpeg" -> "image/jpeg"
         "png" -> "image/png"
         "gif" -> "image/gif"
+        "webp" -> "image/webp"
         else -> "application/octet-stream"
     }
 

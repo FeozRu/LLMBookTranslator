@@ -447,6 +447,52 @@ class AppState(val services: AppServices, private val scope: CoroutineScope) {
         }
     }
 
+    /**
+     * Замена изображения в якорном блоке «Перевода»: выбор файла, копия в images/
+     * книги (уникальное имя при коллизии), смена маркера в эффективном поле фрагмента
+     * (BlockEditor.replaceImage) и тихая пересборка главы. Ручная правка якоря
+     * запрещена (BlockEditor.saveEdit отклоняет) — картинка меняется только так.
+     */
+    fun replaceBlockImage(ref: BlockEditor.BlockRef, chapter: Int) {
+        val p = currentProject.value ?: return
+        val b = currentBook.value ?: return
+        val picked = pickImageFile() ?: return
+        runStage("replace-image") {
+            withContext(Dispatchers.IO) {
+                val name = services.blockEditor.importImage(p.slug, b.slug, picked)
+                val error = services.blockEditor.replaceImage(p.slug, b.slug, ref, name)
+                if (error != null) error("замена не сохранена: $error")
+                val st = structure.value
+                if (st != null && name !in st.images) {
+                    services.projectStore.saveStructure(p.slug, b.slug, st.copy(images = st.images + name))
+                    structure.value = services.projectStore.loadStructure(p.slug, b.slug)
+                }
+                val verify = services.verifyFor(p.slug)
+                val version = if (allEditedDone(chapter)) AssemblyStage.Version.EDITED else AssemblyStage.Version.DRAFT
+                val result = services.assemblyStage.assembleChapter(p.slug, b.slug, chapter, version, verify)
+                message.value = if (result.ok) {
+                    "Изображение заменено на $name, глава пересобрана"
+                } else {
+                    "Изображение заменено, но глава не пересобралась: ${result.problems.joinToString("; ")}"
+                }
+            }
+        }
+    }
+
+    /** Нативный диалог выбора картинки; не-изображение — сообщение и отмена. */
+    private fun pickImageFile(): java.nio.file.Path? {
+        val dialog = FileDialog(Frame(), "Выберите изображение", FileDialog.LOAD)
+        dialog.isVisible = true
+        val name = dialog.file ?: return null
+        val path = java.nio.file.Path.of(dialog.directory, name)
+        val ext = name.substringAfterLast('.', "").lowercase()
+        if (ext !in setOf("jpg", "jpeg", "png", "gif", "svg", "webp")) {
+            message.value = "Это не изображение (нужны jpg, png, gif, svg или webp): $name"
+            return null
+        }
+        return path
+    }
+
     /** Примечание от модели к выделенному месту (роль «Примечания»; дефолт — общая модель). */
     fun requestNote(srcBlock: String, trBlock: String, selection: String) {
         val p = currentProject.value ?: return
