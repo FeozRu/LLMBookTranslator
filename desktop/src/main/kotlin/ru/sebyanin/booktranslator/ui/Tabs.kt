@@ -69,20 +69,24 @@ import ru.sebyanin.booktranslator.ui.components.SectionCaption
 import ru.sebyanin.booktranslator.ui.theme.BtFonts
 import ru.sebyanin.booktranslator.ui.theme.BtPalette
 
-/** Центральная зона: вкладки Перевод | Корректор | Глоссарий | Журнал | Настройки. */
+/**
+ * Центральная зона: два яруса вкладок. Верхний — скоуп (ГЛАВА | ПРОЕКТ | ОБЩЕЕ),
+ * нижний — вкладки выбранного скоупа: глава → Перевод | Корректор (текущая глава из
+ * левого меню), проект → Глоссарий, общее → Журнал | Настройки.
+ */
 @Composable
 fun CenterTabs(state: AppState, modifier: Modifier = Modifier) {
-    var tab by remember { mutableStateOf(0) }
+    var scope by remember { mutableStateOf(0) }
+    var inner by remember { mutableStateOf(0) }
     val requested by state.requestedTab.collectAsState()
     androidx.compose.runtime.LaunchedEffect(requested) {
         requested?.let {
-            tab = when (it) {
-                "critic" -> 1
-                "glossary" -> 2
-                "log" -> 3
-                "settings" -> 4
+            scope = when (it) {
+                "glossary" -> 1
+                "log", "settings" -> 2
                 else -> 0
             }
+            inner = if (it == "critic" || it == "settings") 1 else 0
             state.requestedTab.value = null
         }
     }
@@ -93,28 +97,68 @@ fun CenterTabs(state: AppState, modifier: Modifier = Modifier) {
     val criticVersion by state.criticVersion.collectAsState()
     val pending = remember(criticVersion) { countPendingSuggestions(state) }
 
+    // Последняя вкладка скоупа «ГЛАВА»: при выборе другой главы возвращаемся
+    // в этот скоуп на то же место — даже если сейчас открыты ПРОЕКТ/ОБЩЕЕ
+    var lastChapterInner by remember { mutableStateOf(0) }
+    androidx.compose.runtime.LaunchedEffect(scope, inner) {
+        if (scope == 0) lastChapterInner = inner
+    }
+
+    // Первый запуск пропускаем: восстановленная сессия приходит на композицию уже
+    // с главой — иначе bt-сиды вкладок (glossary/log/settings) сразу вытесняло бы в «ГЛАВУ»
+    var chapterSeen by remember { mutableStateOf(false) }
+    var prevChapter by remember { mutableStateOf<Int?>(null) }
+    val chapter by state.selectedChapter.collectAsState()
+    androidx.compose.runtime.LaunchedEffect(chapter) {
+        if (!chapterSeen) {
+            chapterSeen = true
+        } else if (chapter != null && chapter != prevChapter && scope != 0) {
+            scope = 0
+            inner = lastChapterInner
+        }
+        prevChapter = chapter
+    }
+
     Column(modifier) {
         BtTabs(
-            tabs = listOf(
-                BtTab("Перевод"),
-                BtTab("Корректор", (pending.takeIf { it > 0 })?.toString()),
-                BtTab(
-                    "Глоссарий",
-                    pendingSuffix(glossary.count { it.status == "proposed" } + notes.count { it.status == "proposed" }),
-                ),
-                BtTab("Журнал"),
-                BtTab("Настройки"),
-            ),
-            selected = tab,
-            onSelect = { tab = it },
+            tabs = listOf(BtTab("ГЛАВА"), BtTab("ПРОЕКТ"), BtTab("ОБЩЕЕ")),
+            selected = scope,
+            onSelect = {
+                scope = it
+                inner = 0
+            },
+            compact = true,
+            showDivider = false,
             modifier = Modifier.padding(horizontal = 12.dp),
         )
-        when (tab) {
-            0 -> WorkspacePanel(state, Modifier.fillMaxSize())
-            1 -> CriticTab(state, Modifier.fillMaxSize())
-            2 -> GlossaryTab(state, Modifier.fillMaxSize())
-            3 -> LogTab(state, Modifier.fillMaxSize())
-            4 -> SettingsTab(state, Modifier.fillMaxSize())
+        BtTabs(
+            tabs = when (scope) {
+                0 -> listOf(
+                    BtTab("Перевод"),
+                    BtTab("Корректор", (pending.takeIf { it > 0 })?.toString()),
+                )
+                1 -> listOf(
+                    BtTab(
+                        "Глоссарий",
+                        pendingSuffix(glossary.count { it.status == "proposed" } + notes.count { it.status == "proposed" }),
+                    ),
+                )
+                else -> listOf(BtTab("Журнал"), BtTab("Настройки"))
+            },
+            selected = inner,
+            onSelect = { inner = it },
+            modifier = Modifier.padding(horizontal = 12.dp),
+        )
+        when (scope) {
+            0 -> when (inner) {
+                1 -> CriticTab(state, Modifier.fillMaxSize())
+                else -> WorkspacePanel(state, Modifier.fillMaxSize())
+            }
+            1 -> GlossaryTab(state, Modifier.fillMaxSize())
+            else -> when (inner) {
+                1 -> SettingsTab(state, Modifier.fillMaxSize())
+                else -> LogTab(state, Modifier.fillMaxSize())
+            }
         }
     }
 }

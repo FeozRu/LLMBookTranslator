@@ -37,6 +37,7 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.Dp
+import androidx.compose.ui.unit.TextUnit
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import ru.sebyanin.booktranslator.ui.theme.BtPalette
@@ -115,6 +116,8 @@ data class BtTab(val label: String, val badge: String? = null)
 /**
  * Полоса вкладок: текстовые пункты с подчёркиванием активной вкладки и
  * разделителем под всей строкой — вкладки читаются как вкладки, а не как кнопки.
+ * compact — верхний ярус скоупа в центре (ниже строка, мельче шрифт);
+ * showDivider = false склеивает два яруса в один блок с одной чертой внизу.
  */
 @Composable
 fun BtTabs(
@@ -122,10 +125,16 @@ fun BtTabs(
     selected: Int,
     onSelect: (Int) -> Unit,
     modifier: Modifier = Modifier,
+    compact: Boolean = false,
+    showDivider: Boolean = true,
 ) {
     // fillMaxWidth внутри wrap-content вкладки растянул бы её на всю строку —
     // подчёркивание рисуем по фактической ширине вкладки
     val underlineColor = BtPalette.Accent
+    val rowHeight = if (compact) 26.dp else 34.dp
+    val labelSp = if (compact) 12.sp else 14.sp
+    val badgeSp = if (compact) 11.sp else 12.sp
+    val hPadding = if (compact) 12.dp else 14.dp
     Column(modifier.fillMaxWidth()) {
         Row {
             tabs.forEachIndexed { i, tab ->
@@ -147,20 +156,21 @@ fun BtTabs(
                         },
                 ) {
                     Row(
-                        modifier = Modifier.height(34.dp).padding(horizontal = 14.dp),
+                        modifier = Modifier.height(rowHeight).padding(horizontal = hPadding),
                         verticalAlignment = Alignment.CenterVertically,
                     ) {
                         Text(
                             tab.label,
-                            fontSize = 14.sp,
+                            fontSize = labelSp,
                             fontWeight = if (active) FontWeight.SemiBold else FontWeight.Normal,
+                            letterSpacing = if (compact) 0.6.sp else TextUnit.Unspecified,
                             color = if (active || hovered) BtPalette.Text else BtPalette.TextSecondary,
                         )
                         tab.badge?.let { badge ->
                             Spacer(Modifier.width(5.dp))
                             Text(
                                 badge,
-                                fontSize = 12.sp,
+                                fontSize = badgeSp,
                                 fontWeight = FontWeight.Medium,
                                 color = if (active) BtPalette.AccentText else BtPalette.Muted,
                             )
@@ -169,7 +179,9 @@ fun BtTabs(
                 }
             }
         }
-        Box(Modifier.fillMaxWidth().height(1.dp).background(BtPalette.Border))
+        if (showDivider) {
+            Box(Modifier.fillMaxWidth().height(1.dp).background(BtPalette.Border))
+        }
     }
 }
 
