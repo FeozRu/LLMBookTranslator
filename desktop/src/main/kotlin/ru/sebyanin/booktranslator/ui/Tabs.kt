@@ -2,6 +2,7 @@ package ru.sebyanin.booktranslator.ui
 
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
@@ -807,98 +808,96 @@ private fun SuggestionCardWithContext(
                         }
                     }
                 }
-            }
-        }
 
-        // Контекст: где это написано. Одно место — пара «было/стало»;
-        // несколько (пачечная правка или «всё равно») — список всех мест замены
-        if (isSelected) {
-            val locations = multiLocations ?: remember(s.id, status) {
-                state.services.suggestionService.locateAll(p.slug, b.slug, s)
-            }
-            val location = locations.singleOrNull()
-            if (locations.isEmpty()) {
-                BtCard { Text("Место не найдено: цитаты нет в текущем переводе главы.", fontSize = 12.sp, color = BtPalette.TextSecondary) }
-            } else if (location != null) {
-                BtCard(border = BtPalette.AccentBorderLight, contentPadding = PaddingValues(14.dp)) {
-                    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                        Text(
-                            "Фрагмент ${location.fragmentId}, блок ${location.blockIndex + 1}",
-                            fontSize = 11.sp,
-                            color = BtPalette.AccentText,
-                        )
-                        // Пара «было / стало» — обе стороны от ПЕРЕВОДА.
-                        // До применения: слева текущий текст с цитатой, справа превью замены.
-                        // После применения: цитата «было» в тексте уже заменена — слева
-                        // восстанавливаем «было» обратной подстановкой, справа актуальное.
-                        Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-                            Column(Modifier.weight(1f)) {
-                                SectionCaption("БЫЛО · ПЕРЕВОД ДО ПРАВКИ")
-                                Spacer(Modifier.height(6.dp))
-                                Text(
-                                    if (status == "applied") {
-                                        replacedView(location.trBlock, from = s.became, to = s.was, bg = BtPalette.WarnHighlight, fg = BtPalette.Text)
-                                    } else {
-                                        highlightNeedle(location.trBlock, s.was, BtPalette.WarnHighlight)
-                                    },
-                                    fontSize = 14.sp,
-                                    fontFamily = BtFonts.Book,
-                                    lineHeight = 21.sp,
-                                )
-                            }
-                            Column(Modifier.weight(1f)) {
-                                SectionCaption("СТАЛО · ПОСЛЕ ПРАВКИ", color = BtPalette.SuccessDark)
-                                Spacer(Modifier.height(6.dp))
-                                Text(
-                                    replacedView(
-                                        location.trBlock,
-                                        from = s.was,
-                                        to = s.became,
-                                        bg = BtPalette.AccentBg,
-                                        fg = BtPalette.AccentText,
-                                    ),
-                                    fontSize = 14.sp,
-                                    fontFamily = BtFonts.Book,
-                                    lineHeight = 21.sp,
-                                )
-                            }
-                        }
-                        // Японский оригинал — справочной строкой
-                        if (location.srcBlock.isNotBlank()) {
-                            Text(
-                                "Оригинал: ${location.srcBlock}",
-                                fontSize = 12.sp,
-                                lineHeight = 17.sp,
-                                color = BtPalette.TextSecondary,
-                                maxLines = 4,
-                                overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis,
-                            )
-                        }
+                // Контекст: где это написано. Одно место — пара «было/стало»;
+                // несколько (пачечная правка или «всё равно») — список всех мест замены.
+                // Живёт внутри той же карточки: отдельная карточка внизу — глаза разбегаются
+                if (isSelected) {
+                    CardInlineDivider()
+                    val locations = multiLocations ?: remember(s.id, status) {
+                        state.services.suggestionService.locateAll(p.slug, b.slug, s)
                     }
-                }
-            } else {
-                BtCard(border = BtPalette.AccentBorderLight, contentPadding = PaddingValues(14.dp)) {
-                    Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                        Text(
-                            "Встречается ${locations.size} раз — «Применить везде» меняет каждое:",
-                            fontSize = 12.sp,
-                            color = BtPalette.AccentText,
-                        )
-                        locations.forEach { loc ->
-                            Column {
+                    val location = locations.singleOrNull()
+                    if (locations.isEmpty()) {
+                        Text("Место не найдено: цитаты нет в текущем переводе главы.", fontSize = 12.sp, color = BtPalette.TextSecondary)
+                    } else if (location != null) {
+                        Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                            Text(
+                                "Фрагмент ${location.fragmentId}, блок ${location.blockIndex + 1}",
+                                fontSize = 11.sp,
+                                color = BtPalette.AccentText,
+                            )
+                            // Пара «было / стало» — обе стороны от ПЕРЕВОДА.
+                            // До применения: слева текущий текст с цитатой, справа превью замены.
+                            // После применения: цитата «было» в тексте уже заменена — слева
+                            // восстанавливаем «было» обратной подстановкой, справа актуальное.
+                            Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                                Column(Modifier.weight(1f)) {
+                                    SectionCaption("БЫЛО · ПЕРЕВОД ДО ПРАВКИ")
+                                    Spacer(Modifier.height(6.dp))
+                                    Text(
+                                        if (status == "applied") {
+                                            replacedView(location.trBlock, from = s.became, to = s.was, bg = BtPalette.WarnHighlight, fg = BtPalette.Text)
+                                        } else {
+                                            highlightNeedle(location.trBlock, s.was, BtPalette.WarnHighlight)
+                                        },
+                                        fontSize = 14.sp,
+                                        fontFamily = BtFonts.Book,
+                                        lineHeight = 21.sp,
+                                    )
+                                }
+                                Column(Modifier.weight(1f)) {
+                                    SectionCaption("СТАЛО · ПОСЛЕ ПРАВКИ", color = BtPalette.SuccessDark)
+                                    Spacer(Modifier.height(6.dp))
+                                    Text(
+                                        replacedView(
+                                            location.trBlock,
+                                            from = s.was,
+                                            to = s.became,
+                                            bg = BtPalette.AccentBg,
+                                            fg = BtPalette.AccentText,
+                                        ),
+                                        fontSize = 14.sp,
+                                        fontFamily = BtFonts.Book,
+                                        lineHeight = 21.sp,
+                                    )
+                                }
+                            }
+                            // Японский оригинал — справочной строкой
+                            if (location.srcBlock.isNotBlank()) {
                                 Text(
-                                    "Фрагмент ${loc.fragmentId}, блок ${loc.blockIndex + 1}",
-                                    fontSize = 11.sp,
-                                    color = BtPalette.AccentText,
+                                    "Оригинал: ${location.srcBlock}",
+                                    fontSize = 12.sp,
+                                    lineHeight = 17.sp,
+                                    color = BtPalette.TextSecondary,
+                                    maxLines = 4,
+                                    overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis,
                                 )
-                                Spacer(Modifier.height(2.dp))
-                                Text(
-                                    if (status == "applied") highlightNeedle(loc.trBlock, s.became, BtPalette.AccentBg)
-                                    else highlightNeedle(loc.trBlock, s.was, BtPalette.WarnHighlight),
-                                    fontSize = 14.sp,
-                                    fontFamily = BtFonts.Book,
-                                    lineHeight = 21.sp,
-                                )
+                            }
+                        }
+                    } else {
+                        Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                            Text(
+                                "Встречается ${locations.size} раз — «Применить везде» меняет каждое:",
+                                fontSize = 12.sp,
+                                color = BtPalette.AccentText,
+                            )
+                            locations.forEach { loc ->
+                                Column {
+                                    Text(
+                                        "Фрагмент ${loc.fragmentId}, блок ${loc.blockIndex + 1}",
+                                        fontSize = 11.sp,
+                                        color = BtPalette.AccentText,
+                                    )
+                                    Spacer(Modifier.height(2.dp))
+                                    Text(
+                                        if (status == "applied") highlightNeedle(loc.trBlock, s.became, BtPalette.AccentBg)
+                                        else highlightNeedle(loc.trBlock, s.was, BtPalette.WarnHighlight),
+                                        fontSize = 14.sp,
+                                        fontFamily = BtFonts.Book,
+                                        lineHeight = 21.sp,
+                                    )
+                                }
                             }
                         }
                     }
@@ -906,6 +905,14 @@ private fun SuggestionCardWithContext(
             }
         }
     }
+}
+
+/** Тонкая линия внутри карточки: отделяет раскрытый контекст от тела карточки. */
+@Composable
+private fun CardInlineDivider() {
+    Spacer(Modifier.height(10.dp))
+    Box(Modifier.fillMaxWidth().height(1.dp).background(BtPalette.Border))
+    Spacer(Modifier.height(10.dp))
 }
 
 /**
@@ -1490,7 +1497,15 @@ private fun GlossaryRevisorCard(state: AppState, d: GlossaryRevisionDecision, en
  */
 @Composable
 private fun GlossaryProposalCard(state: AppState, e: GlossaryEntry) {
-    var open by remember(e.original) { mutableStateOf(false) }
+    // bt-проверка: -Dbt.glossaryContext=<термин> (или -Dbt.glossaryContextFile=<utf-8 файл>
+    // для не-ASCII оригиналов, которые shell портит) раскрывает контекст сразу
+    var open by remember(e.original) {
+        val direct = System.getProperty("bt.glossaryContext")
+        val fromFile = System.getProperty("bt.glossaryContextFile")?.let {
+            runCatching { java.nio.file.Files.readString(java.nio.file.Path.of(it)).trim() }.getOrNull()
+        }
+        mutableStateOf(e.original == direct || (fromFile != null && e.original == fromFile))
+    }
 
     Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
         BtCard {
@@ -1536,39 +1551,42 @@ private fun GlossaryProposalCard(state: AppState, e: GlossaryEntry) {
                     }
                 }
                 CustomApproveRow { custom -> state.approveTerm(e, custom) }
-            }
-        }
 
-        // Контекст: где термин написан (пара ОРИГИНАЛ/ПЕРЕВОД, как у корректора)
-        if (open) {
-            GlossaryContextCard(state, e)
+                // Контекст: где термин написан (пара ОРИГИНАЛ/ПЕРЕВОД, как у корректора) —
+                // внутри той же карточки: отдельная карточка внизу — глаза разбегаются
+                if (open) {
+                    CardInlineDivider()
+                    GlossaryContextContent(state, e)
+                }
+            }
         }
     }
 }
 
+/** Содержимое контекста термина — внутрь карточки предложения, без своей обёртки-карточки. */
 @Composable
-private fun GlossaryContextCard(state: AppState, e: GlossaryEntry) {
-    val p = state.currentProject.value ?: return
+private fun GlossaryContextContent(state: AppState, e: GlossaryEntry) {
+    val p = state.currentProject.value
     val b = state.currentBook.value
-    if (b == null) {
-        BtCard { Text("Книга не выбрана: контекст недоступен.", fontSize = 12.sp, color = BtPalette.TextSecondary) }
-        return
-    }
-    val location = remember(p.slug, b.slug, e.original, e.context) {
-        state.services.suggestionService.locateTerm(p.slug, b.slug, e)
-    }
-    if (location == null) {
-        BtCard {
-            Text(
-                "Место не найдено: «${e.original}» нет в блоках оригинала этой книги (возможно, термин предложен в другой книге).",
-                fontSize = 12.sp,
-                color = BtPalette.TextSecondary,
-            )
+    val location = if (p == null || b == null) {
+        null
+    } else {
+        remember(p.slug, b.slug, e.original, e.context) {
+            state.services.suggestionService.locateTerm(p.slug, b.slug, e)
         }
-        return
     }
-    BtCard(border = BtPalette.AccentBorderLight, contentPadding = PaddingValues(14.dp)) {
-        Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+    when {
+        p == null || b == null -> Text(
+            "Книга не выбрана: контекст недоступен.",
+            fontSize = 12.sp,
+            color = BtPalette.TextSecondary,
+        )
+        location == null -> Text(
+            "Место не найдено: «${e.original}» нет в блоках оригинала этой книги (возможно, термин предложен в другой книге).",
+            fontSize = 12.sp,
+            color = BtPalette.TextSecondary,
+        )
+        else -> {
             Text(
                 "Фрагмент ${location.fragmentId}, блок ${location.blockIndex + 1}",
                 fontSize = 11.sp,
