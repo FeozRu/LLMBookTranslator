@@ -13,6 +13,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.foundation.verticalScroll
@@ -194,7 +195,7 @@ fun CriticTab(state: AppState, modifier: Modifier = Modifier) {
     val btSelect = remember { System.getProperty("bt.criticSelect") }
     var selectedId by remember { mutableStateOf<String?>(btSelect) }
 
-    // Глава сменилась (левое меню) — выделенная карточка больше не актуальна
+    // Глава сменилась (левое меню или прокрутка) — выделенная карточка больше не актуальна
     LaunchedEffect(chapter) { if (btSelect == null) selectedId = null }
 
     // Живой статус этапа: кнопки отправки сомнений и перезапуска гаснут во время работы
@@ -203,23 +204,9 @@ fun CriticTab(state: AppState, modifier: Modifier = Modifier) {
     var fixingId by remember { mutableStateOf<String?>(null) }
     LaunchedEffect(running) { if (running == null) fixingId = null }
 
-    // В ключах и slugs книги: без них смена книги при открытой вкладке оставляла
-    // чужие предложения, если номер первой главы совпадал
-    val file = remember(p.slug, b.slug, ch, criticVersion) {
-        state.services.suggestionService.loadChapter(p.slug, b.slug, ch)
-    }
-    // Сомнения переводчика: пометки [[??: …]], оставшиеся в текущем тексте главы.
-    // Выводятся из фрагментов — разрешённые редактором/правками исчезают сами
-    val tDoubts = remember(p.slug, b.slug, ch, criticVersion) {
-        state.services.suggestionService.translatorDoubts(p.slug, b.slug, ch)
-    }
-    // Сомнения, которые редактура закрыла сама (маркера в тексте уже нет) — на проверку
-    val tResolved = remember(p.slug, b.slug, ch, criticVersion) {
-        state.services.suggestionService.translatorDoubtsResolvedByEditor(p.slug, b.slug, ch)
-    }
     val verify = remember(p.slug) { state.services.verifyFor(p.slug) }
 
-    // Действия над сомнениями общие для обеих веток: пометки переводчика видны
+    // Действия над сомнениями общие для всех разделов: пометки переводчика видны
     // и до первого прогона корректора
     val onResolveDoubt: (String) -> Unit = { id ->
         state.services.suggestionService.resolveDoubt(p.slug, b.slug, id)
@@ -236,6 +223,48 @@ fun CriticTab(state: AppState, modifier: Modifier = Modifier) {
         state.runDoubtFix(id, note)
     }
 
+    // ---- скользящее окно глав: непрерывное ревью, как в рабочей зоне «Перевод» ----
+    val chapterOrder = structure?.chapters?.map { it.index } ?: emptyList()
+    val cw = rememberChapterWindowState(book?.slug, ch)
+    // Файлы глав + сомнения читаются при входе главы в окно; criticVersion в ключах:
+    // применение/отклонение правок меняет только work/critic/*.json. Slugs книги в
+    // ключах: без них смена книги при открытой вкладке оставляла чужие предложения,
+    // если номер первой главы совпадал
+    val rowsData = remember(cw.window, criticVersion, p.slug, b.slug, structure) {
+        buildCriticContent(state, p.slug, b.slug, cw.window)
+    }
+    ChapterWindowEffects(
+        state = cw,
+        selected = chapter,
+        bookSlug = book?.slug,
+        chapterOrder = chapterOrder,
+        rowsVersion = rowsData,
+        rowChapterAt = { i -> rowsData.rows.getOrNull(i)?.chapter },
+        chapterRowCount = { c ->
+            // Разделитель + карточки + хвост; глава ещё не в окне — считаем по файлу
+            val visible = state.services.suggestionService.loadChapter(p.slug, b.slug, c)
+                ?.suggestions?.count { it.status != "rejected" && it.status != "applied" } ?: 0
+            visible + 2
+        },
+        onSpyChapter = { c -> if (state.selectedChapter.value != c) state.selectedChapter.value = c },
+    )
+
+    // bt-проверка бесшовности корректора: -Dbt.wsScrollIntoChapter=<N> (с -Dbt.tab=critic)
+    var btScrolledTo by remember { mutableStateOf<Int?>(null) }
+    LaunchedEffect(rowsData) {
+        val into = System.getProperty("bt.wsScrollIntoChapter")?.toIntOrNull() ?: return@LaunchedEffect
+        if (btScrolledTo == into) return@LaunchedEffect
+        if (rowsData.rows.none { it.chapter == into }) {
+            state.selectedChapter.value = into
+            return@LaunchedEffect
+        }
+        btScrolledTo = into
+        val first = rowsData.rows.indexOfFirst { it.chapter == into }
+        val last = rowsData.rows.indexOfLast { it.chapter == into }
+        cw.listState.scrollToItem((first + 3).coerceAtMost(last))
+    }
+
+    val currentSection = rowsData.sections[ch]
     Column(modifier.padding(12.dp)) {
         Row(verticalAlignment = Alignment.CenterVertically) {
             Text(
@@ -247,7 +276,7 @@ fun CriticTab(state: AppState, modifier: Modifier = Modifier) {
             BtButton(
                 // Файл может существовать без прогона корректора (создан разбором
                 // пометки переводчика) — тогда это ещё первый запуск
-                if (file != null && file.model.isNotBlank()) "Перепроверить главу" else "Запустить корректора по главе",
+                if (currentSection?.file?.model?.isNotBlank() == true) "Перепроверить главу" else "Запустить корректора по главе",
                 kind = BtButtonKind.Primary,
                 height = 30.dp,
                 enabled = running == null,
@@ -256,79 +285,132 @@ fun CriticTab(state: AppState, modifier: Modifier = Modifier) {
         }
         Spacer(Modifier.height(10.dp))
 
-        if (file == null) {
-            Column(
-                verticalArrangement = Arrangement.spacedBy(10.dp),
-                modifier = Modifier.verticalScroll(rememberScrollState()),
-            ) {
-                TranslatorDoubtsBlock(tDoubts, running != null, fixingId, onResolveTranslator, onFixDoubt)
-                ResolvedByEditorBlock(tResolved, running != null, fixingId, onFixDoubt)
-                BtCard {
-                    Text(
-                        "Корректор по этой главе ещё не запускался.",
-                        fontSize = 13.sp,
-                        color = BtPalette.TextSecondary,
-                    )
+        LazyColumn(state = cw.listState, verticalArrangement = Arrangement.spacedBy(10.dp)) {
+            itemsIndexed(rowsData.rows, key = { _, r ->
+                when {
+                    r.divider -> "cd${r.chapter}"
+                    r.tail -> "ct${r.chapter}"
+                    else -> "cs${r.chapter}:${r.suggestion?.id}"
                 }
-            }
-        } else {
-            val onResolved: (String, Boolean) -> Unit = { resolvedId, wasOpen ->
-                // Авто-переход к следующему pending: разрешённая карточка исчезает сама
-                // (фильтр + refreshBook); состояние предпросмотра переносится как было
-                val pendingList = file.suggestions.filter { it.status == "pending" }
-                val idx = pendingList.indexOfFirst { it.id == resolvedId }
-                val next = pendingList.getOrNull(idx + 1) ?: pendingList.firstOrNull()
-                selectedId = if (wasOpen) next?.takeIf { it.id != resolvedId }?.id else null
-            }
-            val visible = file.suggestions.filter { it.status != "rejected" && it.status != "applied" }
-            if (visible.isEmpty()) {
-                Column(
-                    verticalArrangement = Arrangement.spacedBy(10.dp),
-                    modifier = Modifier.verticalScroll(rememberScrollState()),
-                ) {
-                    if (file.suggestions.isNotEmpty()) {
-                        Text(
-                            "Применённых: ${file.suggestions.count { it.status == "applied" }} · " +
-                                "отклонённых: ${file.suggestions.count { it.status == "rejected" }}",
-                            fontSize = 12.sp,
-                            color = BtPalette.TextSecondary,
-                        )
-                    }
-                    CriticDoubtsBlock(file, running != null, fixingId, onResolveDoubt, onFixDoubt)
-                    TranslatorDoubtsBlock(tDoubts, running != null, fixingId, onResolveTranslator, onFixDoubt)
-                    ResolvedByEditorBlock(tResolved, running != null, fixingId, onFixDoubt)
-                    if (file.suggestions.isEmpty() && file.doubts.none { it.status != "resolved" } && tDoubts.isEmpty()) {
-                        Text("Предложений нет.", fontSize = 13.sp, color = BtPalette.TextSecondary)
-                    }
-                }
-            } else {
-                LazyColumn(verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                    items(visible) { s ->
+            }) { _, row ->
+                when {
+                    row.divider -> ChapterDivider(row.chapter, row.title)
+                    row.suggestion != null -> {
+                        val s = row.suggestion
+                        val section = rowsData.sections[row.chapter] ?: return@itemsIndexed
                         SuggestionCardWithContext(
                             state, s, verify,
                             isSelected = selectedId == s.id,
                             onToggle = { selectedId = if (selectedId == s.id) null else s.id },
-                            onResolved = onResolved,
+                            onResolved = { resolvedId, wasOpen ->
+                                // Авто-переход к следующему pending раздела: разрешённая
+                                // карточка исчезает сама (фильтр + refreshBook)
+                                val pendingList = section.file?.suggestions?.filter { it.status == "pending" } ?: emptyList()
+                                val idx = pendingList.indexOfFirst { it.id == resolvedId }
+                                val next = pendingList.getOrNull(idx + 1) ?: pendingList.firstOrNull()
+                                selectedId = if (wasOpen) next?.takeIf { it.id != resolvedId }?.id else null
+                            },
                         )
                     }
-                    items(listOf(Unit)) { } // разделитель
-                    item {
-                        Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                            Text(
-                                "Применённых: ${file.suggestions.count { it.status == "applied" }} · " +
-                                    "отклонённых: ${file.suggestions.count { it.status == "rejected" }}",
-                                fontSize = 12.sp,
-                                color = BtPalette.TextSecondary,
-                            )
-                            CriticDoubtsBlock(file, running != null, fixingId, onResolveDoubt, onFixDoubt)
-                            TranslatorDoubtsBlock(tDoubts, running != null, fixingId, onResolveTranslator, onFixDoubt)
-                            ResolvedByEditorBlock(tResolved, running != null, fixingId, onFixDoubt)
-                        }
-                    }
+                    else -> CriticSectionTail(
+                        section = rowsData.sections[row.chapter],
+                        busy = running != null,
+                        fixingId = fixingId,
+                        onResolveDoubt = onResolveDoubt,
+                        onFixDoubt = onFixDoubt,
+                        onResolveTranslator = onResolveTranslator,
+                    )
                 }
             }
         }
     }
+}
+
+/** Хвост раздела главы: счётчики применённых/отклонённых, сомнения и пометки. */
+@Composable
+private fun CriticSectionTail(
+    section: CriticSection?,
+    busy: Boolean,
+    fixingId: String?,
+    onResolveDoubt: (String) -> Unit,
+    onFixDoubt: (String, String) -> Unit,
+    onResolveTranslator: (String) -> Unit,
+) {
+    if (section == null) return
+    val file = section.file
+    Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+        if (file == null) {
+            TranslatorDoubtsBlock(section.tDoubts, busy, fixingId, onResolveTranslator, onFixDoubt)
+            ResolvedByEditorBlock(section.tResolved, busy, fixingId, onFixDoubt)
+            BtCard {
+                Text(
+                    "Корректор по этой главе ещё не запускался.",
+                    fontSize = 13.sp,
+                    color = BtPalette.TextSecondary,
+                )
+            }
+        } else {
+            if (file.suggestions.isNotEmpty()) {
+                Text(
+                    "Применённых: ${file.suggestions.count { it.status == "applied" }} · " +
+                        "отклонённых: ${file.suggestions.count { it.status == "rejected" }}",
+                    fontSize = 12.sp,
+                    color = BtPalette.TextSecondary,
+                )
+            }
+            CriticDoubtsBlock(file, busy, fixingId, onResolveDoubt, onFixDoubt)
+            TranslatorDoubtsBlock(section.tDoubts, busy, fixingId, onResolveTranslator, onFixDoubt)
+            ResolvedByEditorBlock(section.tResolved, busy, fixingId, onFixDoubt)
+            if (file.suggestions.isEmpty() && file.doubts.none { it.status != "resolved" } && section.tDoubts.isEmpty()) {
+                Text("Предложений нет.", fontSize = 13.sp, color = BtPalette.TextSecondary)
+            }
+        }
+    }
+}
+
+/** Раздел окна корректора: файл главы + сомнения переводчика. */
+private data class CriticSection(
+    val chapter: Int,
+    val title: String,
+    /** Файл корректора главы; null — корректор ещё не запускался. */
+    val file: CriticChapterFile?,
+    val tDoubts: List<TranslatorDoubt>,
+    val tResolved: List<TranslatorDoubts.ResolvedByEditor>,
+)
+
+/** Строка списка корректора: разделитель главы, карточка предложения или хвост раздела. */
+private data class CriticRow(
+    val chapter: Int,
+    val title: String,
+    val divider: Boolean = false,
+    val tail: Boolean = false,
+    val suggestion: CriticSuggestion? = null,
+)
+
+/** Строки и разделы окна корректора. */
+private class CriticRows(val rows: List<CriticRow>, val sections: Map<Int, CriticSection>)
+
+/**
+ * Данные разделов окна: файл корректора главы (null — не запускался), сомнения
+ * переводчика и разрешённые редактурой — читаются при входе главы в окно.
+ */
+private fun buildCriticContent(state: AppState, projectSlug: String, bookSlug: String, window: List<Int>): CriticRows {
+    val chapters = state.structure.value?.chapters
+    val rows = mutableListOf<CriticRow>()
+    val sections = mutableMapOf<Int, CriticSection>()
+    for (c in window) {
+        val title = chapters?.firstOrNull { it.index == c }?.title.orEmpty()
+        val file = state.services.suggestionService.loadChapter(projectSlug, bookSlug, c)
+        val tDoubts = state.services.suggestionService.translatorDoubts(projectSlug, bookSlug, c)
+        val tResolved = state.services.suggestionService.translatorDoubtsResolvedByEditor(projectSlug, bookSlug, c)
+        sections[c] = CriticSection(c, title, file, tDoubts, tResolved)
+        rows += CriticRow(c, title, divider = true)
+        file?.suggestions
+            ?.filter { it.status != "rejected" && it.status != "applied" }
+            ?.forEach { rows += CriticRow(c, title, suggestion = it) }
+        rows += CriticRow(c, title, tail = true)
+    }
+    return CriticRows(rows, sections)
 }
 
 /** Строка сомнения в обобщённой карточке: id действия, текст, необязательное место в книге. */

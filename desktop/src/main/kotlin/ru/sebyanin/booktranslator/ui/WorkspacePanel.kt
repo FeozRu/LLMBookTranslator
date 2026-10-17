@@ -51,7 +51,28 @@ import ru.sebyanin.booktranslator.ui.theme.BtPalette
 const val PREVIEW_FS_MIN = 10
 const val PREVIEW_FS_MAX = 24
 
-/** Рабочая зона: параллельный просмотр главы (оригинал слева, перевод справа). */
+/** Строка рабочей зоны: разделитель главы или пара «оригинал | перевод». */
+private data class WorkspaceRow(
+    val chapter: Int,
+    val title: String,
+    val divider: Boolean,
+    val blockIdx: Int = -1,
+    val src: String = "",
+    /** Перевод блока; null — заполнитель «ещё не переведено». */
+    val out: String? = null,
+    val ref: BlockEditor.BlockRef? = null,
+)
+
+/**
+ * Рабочая зона: параллельный просмотр (оригинал слева, перевод справа) в режиме
+ * непрерывного чтения — следующая глава подгружается при прокрутке вниз, предыдущая
+ * при прокрутке вверх, позиция вьюпорта сохраняется (requestScrollToItem до смены
+ * окна). В памяти — окно из нескольких глав ([CHAPTER_WINDOW_CAP]); данные главы
+ * читаются с диска только когда глава входит в окно. Глава первой видимой строки
+ * становится текущей (scroll-spy, как навигация в настройках): за ней следят шапка,
+ * «Собрать главу» и подсветка в левом меню; клик по главе в меню, наоборот,
+ * пересобирает окно вокруг неё и прыгает к её началу.
+ */
 @Composable
 fun WorkspacePanel(state: AppState, modifier: Modifier = Modifier) {
     val chapter by state.selectedChapter.collectAsState()
@@ -63,30 +84,69 @@ fun WorkspacePanel(state: AppState, modifier: Modifier = Modifier) {
     val manifest by state.manifest.collectAsState()
     val book by state.currentBook.collectAsState()
     val settings by state.services.settings.collectAsState()
+    // Тексты глав живут в файлах вне манифеста (правка блока, сборка, корректор):
+    // refreshBook дёргает счётчик после любого этапа — строки окна пересобираются
+    val criticVersion by state.criticVersion.collectAsState()
 
     val ch = chapter ?: return
-    val meta = structure?.chapters?.firstOrNull { it.index == ch }
-    val blocks = remember(ch, version, manifest, book) {
-        state.chapterBlocks(ch)
-    }
-    val src = blocks.src
-    val out = blocks.out
-    val isFallback = blocks.shownVersion != version
     val previewFs = settings.previewFontSize.coerceIn(PREVIEW_FS_MIN, PREVIEW_FS_MAX)
+
+    // ---- скользящее окно глав: непрерывное чтение (механика общая с корректором) ----
+    val chapterOrder = structure?.chapters?.map { it.index } ?: emptyList()
+    val cw = rememberChapterWindowState(book?.slug, ch)
+
+    // Строки окна. Ключи манифест/criticVersion/book — данные на диске меняет любой
+    // этап и правка блока; version — переключение черновик/редактура
+    val (rows, shownByChapter) = remember(cw.window, version, manifest, book, criticVersion, structure) {
+        buildWorkspaceContent(state, cw.window)
+    }
+
+    ChapterWindowEffects(
+        state = cw,
+        selected = chapter,
+        bookSlug = book?.slug,
+        chapterOrder = chapterOrder,
+        rowsVersion = rows,
+        rowChapterAt = { i -> rows.getOrNull(i)?.chapter },
+        chapterRowCount = { c -> state.chapterBlocks(c).src.size + 1 }, // разделитель + блоки
+        onSpyChapter = { c -> if (state.selectedChapter.value != c) state.selectedChapter.value = c },
+    )
+
+    // bt-проверка бесшовности: -Dbt.wsScrollIntoChapter=<N> — открыть главу N и встать
+    // на 3-й блок: окно должно догрузить соседей, шапка и левое меню — следить за позицией
+    var btScrolledTo by remember { mutableStateOf<Int?>(null) }
+    LaunchedEffect(rows) {
+        val into = System.getProperty("bt.wsScrollIntoChapter")?.toIntOrNull() ?: return@LaunchedEffect
+        if (btScrolledTo == into) return@LaunchedEffect
+        if (rows.none { it.chapter == into }) {
+            state.selectedChapter.value = into
+            return@LaunchedEffect
+        }
+        btScrolledTo = into
+        val first = rows.indexOfFirst { it.chapter == into }
+        val last = rows.indexOfLast { it.chapter == into }
+        cw.listState.scrollToItem((first + 3).coerceAtMost(last))
+    }
 
     // Ручной редактор блока: клик по правой карточке. bt-флаги для скриншотов:
     // -Dbt.blockEdit=<индекс> открывает редактор, -Dbt.blockEditSel="a:b" сеет выделение
-    var editingIdx by remember(ch, version) {
-        mutableStateOf(System.getProperty("bt.blockEdit")?.toIntOrNull()?.takeIf { it >= 0 })
+    var editingAt by remember { mutableStateOf<Pair<Int, Int>?>(null) } // (глава, блок)
+    LaunchedEffect(ch, version) {
+        editingAt = null
+        System.getProperty("bt.blockEdit")?.toIntOrNull()?.takeIf { it >= 0 }?.let { editingAt = ch to it }
     }
-    var fieldValue by remember(editingIdx) {
-        mutableStateOf(TextFieldValue(out.getOrNull(editingIdx ?: -1) ?: ""))
+    var fieldValue by remember(editingAt) {
+        val t = editingAt
+        val initial = if (t == null) "" else {
+            rows.firstOrNull { !it.divider && it.chapter == t.first && it.blockIdx == t.second }?.out.orEmpty()
+        }
+        mutableStateOf(TextFieldValue(initial))
     }
-    var noteText by remember(editingIdx) { mutableStateOf("") }
+    var noteText by remember(editingAt) { mutableStateOf("") }
     var wasSaving by remember { mutableStateOf(false) }
     val focusRequester = remember { FocusRequester() }
     val sel = fieldValue.selection
-    val hasSelection = editingIdx != null && sel.min < sel.max
+    val hasSelection = editingAt != null && sel.min < sel.max
     val selectedText = if (hasSelection) fieldValue.text.substring(sel.min, sel.max) else ""
 
     // Закрытие редактора по завершении сохранения: saveBlockEdit ставит message = null
@@ -95,7 +155,7 @@ fun WorkspacePanel(state: AppState, modifier: Modifier = Modifier) {
     val message by state.message.collectAsState()
     LaunchedEffect(message) {
         if (wasSaving && message != null) {
-            if (!message!!.startsWith("Ошибка")) editingIdx = null
+            if (!message!!.startsWith("Ошибка")) editingAt = null
             wasSaving = false
         }
     }
@@ -107,8 +167,8 @@ fun WorkspacePanel(state: AppState, modifier: Modifier = Modifier) {
             state.noteDraft.value = null
         }
     }
-    LaunchedEffect(editingIdx) {
-        if (editingIdx != null) {
+    LaunchedEffect(editingAt) {
+        if (editingAt != null) {
             System.getProperty("bt.blockEditSel")?.let { raw ->
                 val parts = raw.split(":").mapNotNull { it.toIntOrNull() }
                 if (parts.size == 2) fieldValue = fieldValue.copy(selection = TextRange(parts[0], parts[1]))
@@ -117,6 +177,11 @@ fun WorkspacePanel(state: AppState, modifier: Modifier = Modifier) {
         }
     }
 
+    val shownVersion = shownByChapter[ch] ?: version
+    val isFallback = shownVersion != version
+    val chapterTitle = structure?.chapters?.firstOrNull { it.index == ch }?.title.orEmpty()
+    val chBlockCount = rows.count { !it.divider && it.chapter == ch }
+
     Column(modifier.padding(horizontal = 20.dp, vertical = 14.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
         Row(verticalAlignment = Alignment.CenterVertically) {
             // weight(1f) обязателен: без него колонка меряется по самому длинному
@@ -124,17 +189,17 @@ fun WorkspacePanel(state: AppState, modifier: Modifier = Modifier) {
             // кнопка сжимается в вертикальную полоску на дефолтном окне (урок)
             Column(Modifier.weight(1f)) {
                 Text(
-                    "Глава $ch · ${meta?.title ?: ""}",
+                    "Глава $ch · $chapterTitle",
                     fontSize = 17.sp,
                     fontWeight = FontWeight.SemiBold,
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis,
                 )
                 Text(
-                    "${src.size} блоков · показан: " +
+                    "$chBlockCount блоков · показан: " +
                         when {
-                            isFallback && blocks.shownVersion == "draft" -> "черновик (редактуры пока нет)"
-                            isFallback && blocks.shownVersion == "edited" -> "редактура (выбран черновик, но его нет)"
+                            isFallback && shownVersion == "draft" -> "черновик (редактуры пока нет)"
+                            isFallback && shownVersion == "edited" -> "редактура (выбран черновик, но его нет)"
                             version == "edited" -> "отредактированный текст"
                             else -> "черновик"
                         },
@@ -144,7 +209,7 @@ fun WorkspacePanel(state: AppState, modifier: Modifier = Modifier) {
                     overflow = TextOverflow.Ellipsis,
                 )
                 Text(
-                    "Клик по блоку перевода — правка; выделите слова — примечание (вручную или от модели)",
+                    "Главы листаются сплошным потоком; клик по блоку перевода — правка, выделение слов — примечание",
                     fontSize = 11.sp,
                     color = BtPalette.Muted,
                 )
@@ -196,17 +261,19 @@ fun WorkspacePanel(state: AppState, modifier: Modifier = Modifier) {
         Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
             SectionCaption("ОРИГИНАЛ", Modifier.weight(1f))
             SectionCaption(
-                "ПЕРЕВОД (${if (blocks.shownVersion == "edited") "редактура" else "черновик"})",
+                "ПЕРЕВОД (${if (shownVersion == "edited") "редактура" else "черновик"})",
                 Modifier.weight(1f),
                 color = BtPalette.AccentText,
             )
         }
 
-        LazyColumn(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(6.dp)) {
-            itemsIndexed(src) { i, s ->
-                val t = out.getOrNull(i)
-                val ref = blocks.refs.getOrNull(i)
-                val editing = editingIdx == i
+        LazyColumn(state = cw.listState, modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+            itemsIndexed(rows, key = { _, r -> if (r.divider) "d${r.chapter}" else "b${r.chapter}:${r.blockIdx}" }) { _, row ->
+                if (row.divider) {
+                    ChapterDivider(row.chapter, row.title)
+                    return@itemsIndexed
+                }
+                val editing = editingAt == (row.chapter to row.blockIdx)
                 Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
                     BtCard(
                         modifier = Modifier.weight(1f),
@@ -214,12 +281,12 @@ fun WorkspacePanel(state: AppState, modifier: Modifier = Modifier) {
                         contentPadding = PaddingValues(horizontal = 14.dp, vertical = 10.dp),
                     ) {
                         Text(
-                            s,
+                            row.src,
                             fontFamily = BtFonts.Book,
                             fontSize = previewFs.sp,
                             lineHeight = (previewFs * 22f / 14f).sp,
-                            color = if (s.startsWith("#")) BtPalette.Text else BtPalette.Text,
-                            fontWeight = if (s.startsWith("#")) FontWeight.SemiBold else FontWeight.Normal,
+                            color = BtPalette.Text,
+                            fontWeight = if (row.src.startsWith("#")) FontWeight.SemiBold else FontWeight.Normal,
                         )
                     }
                     if (editing) {
@@ -251,7 +318,7 @@ fun WorkspacePanel(state: AppState, modifier: Modifier = Modifier) {
                                     )
                                     BtButton(
                                         "Спросить LLM",
-                                        onClick = { state.requestNote(s, t ?: "", selectedText) },
+                                        onClick = { state.requestNote(row.src, row.out ?: "", selectedText) },
                                         enabled = running == null,
                                         height = 30.dp,
                                     )
@@ -277,16 +344,16 @@ fun WorkspacePanel(state: AppState, modifier: Modifier = Modifier) {
                                 BtButton(
                                     "Сохранить",
                                     onClick = {
-                                        val r = ref ?: return@BtButton
+                                        val r = row.ref ?: return@BtButton
                                         state.message.value = null
                                         wasSaving = true
-                                        state.saveBlockEdit(r, ch, fieldValue.text)
+                                        state.saveBlockEdit(r, row.chapter, fieldValue.text)
                                     },
-                                    enabled = running == null && ref != null,
+                                    enabled = running == null && row.ref != null,
                                     kind = BtButtonKind.Success,
                                     height = 30.dp,
                                 )
-                                BtButton("Отмена", onClick = { editingIdx = null }, enabled = running == null, height = 30.dp)
+                                BtButton("Отмена", onClick = { editingAt = null }, enabled = running == null, height = 30.dp)
                                 Text(
                                     "переносы строк при сохранении станут пробелами; якоря { [img:…] } меняются только через «Заменить изображение»",
                                     fontSize = 11.sp,
@@ -294,7 +361,7 @@ fun WorkspacePanel(state: AppState, modifier: Modifier = Modifier) {
                                 )
                             }
                         }
-                    } else if (t != null && BlockEditor.IMG_MARKER_RE.containsMatchIn(t)) {
+                    } else if (row.out != null && BlockEditor.IMG_MARKER_RE.containsMatchIn(row.out)) {
                         // Якорь изображения: ручная правка текста запрещена, картинка
                         // меняется загрузкой файла в images/ проекта
                         BtCard(
@@ -304,17 +371,17 @@ fun WorkspacePanel(state: AppState, modifier: Modifier = Modifier) {
                         ) {
                             Column {
                                 Text(
-                                    t,
+                                    row.out,
                                     fontFamily = BtFonts.Book,
                                     fontSize = previewFs.sp,
                                     lineHeight = (previewFs * 22f / 14f).sp,
                                 )
-                                if (ref != null) {
+                                if (row.ref != null) {
                                     Spacer(Modifier.height(8.dp))
                                     Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                                         BtButton(
                                             "Заменить изображение…",
-                                            onClick = { state.replaceBlockImage(ref, ch) },
+                                            onClick = { state.replaceBlockImage(row.ref, row.chapter) },
                                             enabled = running == null,
                                             height = 30.dp,
                                         )
@@ -330,19 +397,19 @@ fun WorkspacePanel(state: AppState, modifier: Modifier = Modifier) {
                     } else {
                         BtCard(
                             modifier = Modifier.weight(1f).clickable(
-                                enabled = running == null && ref != null && !t.isNullOrBlank(),
-                            ) { editingIdx = i },
-                            border = if (t != null) BtPalette.AccentBorderLight else BtPalette.Border,
-                            background = if (t == null) BtPalette.Bg else BtPalette.Card,
+                                enabled = running == null && row.ref != null && !row.out.isNullOrBlank(),
+                            ) { editingAt = row.chapter to row.blockIdx },
+                            border = if (row.out != null) BtPalette.AccentBorderLight else BtPalette.Border,
+                            background = if (row.out == null) BtPalette.Bg else BtPalette.Card,
                             contentPadding = PaddingValues(horizontal = 14.dp, vertical = 10.dp),
                         ) {
                             Text(
-                                t ?: "— ещё не переведено —",
+                                row.out ?: "— ещё не переведено —",
                                 fontFamily = BtFonts.Book,
                                 fontSize = previewFs.sp,
                                 lineHeight = (previewFs * 22f / 14f).sp,
-                                color = if (t == null) BtPalette.Muted else BtPalette.Text,
-                                fontWeight = if (t?.startsWith("#") == true) FontWeight.SemiBold else FontWeight.Normal,
+                                color = if (row.out == null) BtPalette.Muted else BtPalette.Text,
+                                fontWeight = if (row.out?.startsWith("#") == true) FontWeight.SemiBold else FontWeight.Normal,
                             )
                         }
                     }
@@ -353,6 +420,31 @@ fun WorkspacePanel(state: AppState, modifier: Modifier = Modifier) {
         // Конкорданс: как фраза переводилась ранее
         ConcordanceBar(state)
     }
+}
+
+/** Строки окна: разделитель + пары блоков каждой главы; карта «глава → какая версия показана». */
+private fun buildWorkspaceContent(state: AppState, window: List<Int>): Pair<List<WorkspaceRow>, Map<Int, String>> {
+    val rows = mutableListOf<WorkspaceRow>()
+    val shown = mutableMapOf<Int, String>()
+    val chapters = state.structure.value?.chapters
+    for (c in window) {
+        val title = chapters?.firstOrNull { it.index == c }?.title.orEmpty()
+        rows += WorkspaceRow(c, title, divider = true)
+        val view = state.chapterBlocks(c)
+        shown[c] = view.shownVersion
+        view.src.forEachIndexed { i, s ->
+            rows += WorkspaceRow(
+                chapter = c,
+                title = title,
+                divider = false,
+                blockIdx = i,
+                src = s,
+                out = view.out.getOrNull(i),
+                ref = view.refs.getOrNull(i),
+            )
+        }
+    }
+    return rows to shown
 }
 
 /** Поиск по выравниванию: «воспоминание персонажа» — сверка прежних переводов. */

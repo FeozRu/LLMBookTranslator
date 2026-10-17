@@ -15,6 +15,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -337,8 +338,19 @@ private fun ChaptersList(state: AppState, modifier: Modifier = Modifier) {
 
     val chapters = remember(criticVersion, manifest) { state.chapterUiList() }
 
+    // Подсветка следует за прокруткой рабочей зоны (scroll-spy меняет выбранную главу):
+    // выбранная строка ушла из вида — мягко доводим список
+    val listState = rememberLazyListState()
+    LaunchedEffect(selected, chapters) {
+        val idx = chapters.indexOfFirst { it.index == selected }
+        if (idx < 0) return@LaunchedEffect
+        if (listState.layoutInfo.visibleItemsInfo.none { it.index == idx }) {
+            listState.animateScrollToItem(idx)
+        }
+    }
+
     Column(modifier) {
-        LazyColumn(Modifier.weight(1f).padding(start = CONTENT_INDENT)) {
+        LazyColumn(state = listState, modifier = Modifier.weight(1f).padding(start = CONTENT_INDENT)) {
         items(chapters) { ch ->
             val isSelected = ch.index == selected
             // «N к ревью» — тот же янтарный, что у «к ревью: N» в правой панели:
