@@ -34,6 +34,7 @@ import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.TextFieldValue
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import ru.sebyanin.booktranslator.AppState
@@ -118,8 +119,17 @@ fun WorkspacePanel(state: AppState, modifier: Modifier = Modifier) {
 
     Column(modifier.padding(horizontal = 20.dp, vertical = 14.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
         Row(verticalAlignment = Alignment.CenterVertically) {
-            Column {
-                Text("Глава $ch · ${meta?.title ?: ""}", fontSize = 17.sp, fontWeight = FontWeight.SemiBold)
+            // weight(1f) обязателен: без него колонка меряется по самому длинному
+            // ребёнку (подсказка ~470px), и «Собрать главу» достаётся ~20px —
+            // кнопка сжимается в вертикальную полоску на дефолтном окне (урок)
+            Column(Modifier.weight(1f)) {
+                Text(
+                    "Глава $ch · ${meta?.title ?: ""}",
+                    fontSize = 17.sp,
+                    fontWeight = FontWeight.SemiBold,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                )
                 Text(
                     "${src.size} блоков · показан: " +
                         when {
@@ -130,6 +140,8 @@ fun WorkspacePanel(state: AppState, modifier: Modifier = Modifier) {
                         },
                     fontSize = 12.sp,
                     color = if (isFallback) BtPalette.AccentText else BtPalette.TextSecondary,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
                 )
                 Text(
                     "Клик по блоку перевода — правка; выделите слова — примечание (вручную или от модели)",
@@ -137,7 +149,7 @@ fun WorkspacePanel(state: AppState, modifier: Modifier = Modifier) {
                     color = BtPalette.Muted,
                 )
             }
-            Spacer(Modifier.weight(1f))
+            Spacer(Modifier.width(10.dp))
 
             // Размер шрифта предпросмотра: сохраняется в settings.json
             Row(verticalAlignment = Alignment.CenterVertically) {
