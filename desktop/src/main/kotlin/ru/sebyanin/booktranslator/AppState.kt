@@ -75,6 +75,18 @@ class AppState(val services: AppServices, private val scope: CoroutineScope) {
     val qaReport = MutableStateFlow<QaReport?>(null)
 
     /**
+     * Кэш [chapterBlocks]: строки окна непрерывного чтения пересобираются при каждой
+     * догрузке/вытеснении главы, и без кэша пересборка синхронно перечитывала с диска
+     * ВСЕ главы окна (исходник + фрагменты + собранный файл на главу) прямо в середине
+     * кадра — догрузка блокировала UI-поток, а зарегистрированный в это же время
+     * requestScrollToItem затем отбрасывал накопленную за паузу прокрутку (вид
+     * «возвращало» при скролле). Штамп — версии данных: viewVersion (черновик/
+     * редактура) и criticVersion (refreshBook поднимает после любого этапа и правки
+     * блоков); ключ — slugs книги.
+     */
+    private val chapterViewCache = mutableMapOf<String, Pair<Pair<String, Int>, ChapterView>>()
+
+    /**
      * Версия решений ревизора: инкрементируется при перезагрузке знаний
      * (после прогона и после каждого действия) — урок criticVersion.
      */
@@ -812,6 +824,11 @@ class AppState(val services: AppServices, private val scope: CoroutineScope) {
         val b = currentBook.value ?: return empty
         val st = structure.value ?: return empty
         val meta = st.chapters.firstOrNull { it.index == chapter } ?: return empty
+
+        val stamp = viewVersion.value to criticVersion.value
+        val key = "${p.slug}/${b.slug}/$chapter"
+        chapterViewCache[key]?.takeIf { it.first == stamp }?.let { return it.second }
+
         val src = services.projectStore.readChapterSource(p.slug, b.slug, meta.file).map { it.text }
 
         val requested = viewVersion.value
@@ -859,17 +876,19 @@ class AppState(val services: AppServices, private val scope: CoroutineScope) {
             return texts to refs
         }
 
-        val (requestedTexts, requestedRefs) = collect(requested)
-        val hasAnyText = requestedTexts.any { it.isNotBlank() && it != "— ещё не переведено —" }
-        if (hasAnyText) return ChapterView(src, requestedTexts, requested, requestedRefs)
-
-        // Фолбэк: показать то, что есть
-        val (alternateTexts, alternateRefs) = collect(alternate)
-        return if (alternateTexts.any { it.isNotBlank() }) {
-            ChapterView(src, alternateTexts, alternate, alternateRefs)
-        } else {
-            ChapterView(src, requestedTexts, requested, requestedRefs)
+        val view = run {
+            val (requestedTexts, requestedRefs) = collect(requested)
+            val hasAnyText = requestedTexts.any { it.isNotBlank() && it != "— ещё не переведено —" }
+            if (hasAnyText) ChapterView(src, requestedTexts, requested, requestedRefs)
+            else {
+                // Фолбэк: показать то, что есть
+                val (alternateTexts, alternateRefs) = collect(alternate)
+                if (alternateTexts.any { it.isNotBlank() }) ChapterView(src, alternateTexts, alternate, alternateRefs)
+                else ChapterView(src, requestedTexts, requested, requestedRefs)
+            }
         }
+        chapterViewCache[key] = stamp to view
+        return view
     }
 
     fun bookProgress(): Pair<Int, Int> {

@@ -224,12 +224,20 @@ fun CriticTab(state: AppState, modifier: Modifier = Modifier) {
     // ---- скользящее окно глав: непрерывное ревью, как в рабочей зоне «Перевод» ----
     val chapterOrder = structure?.chapters?.map { it.index } ?: emptyList()
     val cw = rememberChapterWindowState(book?.slug, ch)
+    // Кэш разделов окна: строки пересобираются при КАЖДОЙ догрузке/вытеснении главы, и
+    // без кэша пересборка синхронно перечитывала с диска все главы окна (файл критика +
+    // фрагменты под сомнения, дважды на главу) прямо в середине кадра — пауза растягивала
+    // окно между регистрацией requestScrollToItem и его применением, и накопленная за
+    // неё прокрутка терялась (вид «возвращало» при скролле). Штамп актуальности —
+    // criticVersion (refreshBook поднимает после любого этапа и правки блоков), он же
+    // в ключах пересборки
+    val sectionCache = remember { mutableMapOf<String, CriticSection>() }
     // Файлы глав + сомнения читаются при входе главы в окно; criticVersion в ключах:
     // применение/отклонение правок меняет только work/critic/*.json. Slugs книги в
     // ключах: без них смена книги при открытой вкладке оставляла чужие предложения,
     // если номер первой главы совпадал
     val rowsData = remember(cw.window, criticVersion, p.slug, b.slug, structure) {
-        buildCriticContent(state, p.slug, b.slug, cw.window)
+        buildCriticContent(state, p.slug, b.slug, criticVersion, cw.window, sectionCache)
     }
     ChapterWindowEffects(
         state = cw,
@@ -239,9 +247,9 @@ fun CriticTab(state: AppState, modifier: Modifier = Modifier) {
         rowsVersion = rowsData,
         rowChapterAt = { i -> rowsData.rows.getOrNull(i)?.chapter },
         chapterRowCount = { c ->
-            // Разделитель + карточки + хвост; глава ещё не в окне — считаем по файлу
-            val visible = state.services.suggestionService.loadChapter(p.slug, b.slug, c)
-                ?.suggestions?.count { it.status != "rejected" && it.status != "applied" } ?: 0
+            // Разделитель + карточки + хвост; глава ещё не в окне — считается по данным
+            val visible = loadCriticSection(state, p.slug, b.slug, criticVersion, c, sectionCache)
+                .file?.suggestions?.count { it.status != "rejected" && it.status != "applied" } ?: 0
             visible + 2
         },
         onSpyChapter = { c -> if (state.selectedChapter.value != c) state.selectedChapter.value = c },
@@ -398,26 +406,53 @@ private data class CriticRow(
 /** Строки и разделы окна корректора. */
 private class CriticRows(val rows: List<CriticRow>, val sections: Map<Int, CriticSection>)
 
+/** Ключ раздела в кэше: slugs книги + версия данных корректора + глава. */
+private fun sectionKey(projectSlug: String, bookSlug: String, version: Int, chapter: Int) =
+    "$projectSlug/$bookSlug/$version/$chapter"
+
 /**
- * Данные разделов окна: файл корректора главы (null — не запускался), сомнения
- * переводчика и разрешённые редактурой — читаются при входе главы в окно.
+ * Данные раздела главы: файл корректора (null — не запускался), сомнения переводчика
+ * и разрешённые редактурой. Через [cache] (см. CriticTab): глава читается с диска один
+ * раз на версию данных — пересборки строк окна переиспользуют готовое.
  */
-private fun buildCriticContent(state: AppState, projectSlug: String, bookSlug: String, window: List<Int>): CriticRows {
+private fun loadCriticSection(
+    state: AppState,
+    projectSlug: String,
+    bookSlug: String,
+    version: Int,
+    chapter: Int,
+    cache: MutableMap<String, CriticSection>,
+): CriticSection = cache.getOrPut(sectionKey(projectSlug, bookSlug, version, chapter)) {
     val chapters = state.structure.value?.chapters
+    val title = chapters?.firstOrNull { it.index == chapter }?.title.orEmpty()
+    val file = state.services.suggestionService.loadChapter(projectSlug, bookSlug, chapter)
+    val tDoubts = state.services.suggestionService.translatorDoubts(projectSlug, bookSlug, chapter)
+    val tResolved = state.services.suggestionService.translatorDoubtsResolvedByEditor(projectSlug, bookSlug, chapter)
+    CriticSection(chapter, title, file, tDoubts, tResolved)
+}
+
+/** Строки окна: разделители, карточки и хвосты разделов всех глав окна. */
+private fun buildCriticContent(
+    state: AppState,
+    projectSlug: String,
+    bookSlug: String,
+    version: Int,
+    window: List<Int>,
+    cache: MutableMap<String, CriticSection>,
+): CriticRows {
     val rows = mutableListOf<CriticRow>()
     val sections = mutableMapOf<Int, CriticSection>()
     for (c in window) {
-        val title = chapters?.firstOrNull { it.index == c }?.title.orEmpty()
-        val file = state.services.suggestionService.loadChapter(projectSlug, bookSlug, c)
-        val tDoubts = state.services.suggestionService.translatorDoubts(projectSlug, bookSlug, c)
-        val tResolved = state.services.suggestionService.translatorDoubtsResolvedByEditor(projectSlug, bookSlug, c)
-        sections[c] = CriticSection(c, title, file, tDoubts, tResolved)
-        rows += CriticRow(c, title, divider = true)
-        file?.suggestions
+        val section = loadCriticSection(state, projectSlug, bookSlug, version, c, cache)
+        sections[c] = section
+        rows += CriticRow(c, section.title, divider = true)
+        section.file?.suggestions
             ?.filter { it.status != "rejected" && it.status != "applied" }
-            ?.forEach { rows += CriticRow(c, title, suggestion = it) }
-        rows += CriticRow(c, title, tail = true)
+            ?.forEach { rows += CriticRow(c, section.title, suggestion = it) }
+        rows += CriticRow(c, section.title, tail = true)
     }
+    // Окно ушло вперёд — главы вне окна кэш не держит (он про скорость пересборки, не про память)
+    cache.keys.retainAll(window.map { sectionKey(projectSlug, bookSlug, version, it) }.toSet())
     return CriticRows(rows, sections)
 }
 
