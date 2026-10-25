@@ -19,6 +19,7 @@ import androidx.compose.ui.window.application
 import androidx.compose.ui.window.rememberWindowState
 import ru.sebyanin.booktranslator.core.AppServices
 import ru.sebyanin.booktranslator.core.mcp.McpServer
+import ru.sebyanin.booktranslator.core.mcp.MutationNotifier
 import ru.sebyanin.booktranslator.core.mcp.StageLauncher
 import ru.sebyanin.booktranslator.ui.AppShell
 import ru.sebyanin.booktranslator.ui.MascotMockupsScreen
@@ -129,7 +130,11 @@ fun main() = application {
 
     // MCP-сервер: живёт по настройкам (вкл/выкл, порт, токен)
     val mcpServer = remember {
-        McpServer(services, StageLauncher(state::launchStage))
+        McpServer(
+            services,
+            StageLauncher(state::launchStage),
+            MutationNotifier { project, book -> state.externalMutated(project, book) },
+        )
     }
     val settings by services.settings.collectAsState()
     LaunchedEffect(settings.mcp.enabled, settings.mcp.port) {

@@ -153,7 +153,7 @@ fun SettingsTab(state: AppState, modifier: Modifier = Modifier) {
             )
         },
         SettingsSection("MCP") {
-            SectionCaption("MCP (ВНЕШНЕЕ УПРАВЛЕНИЕ, НАПРИМЕР ZCODE)")
+            SectionCaption("MCP (ВНЕШНЕЕ УПРАВЛЕНИЕ)")
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Text("Сервер", fontSize = 13.sp, modifier = Modifier.weight(1f))
                 BtDropdown(

@@ -46,6 +46,19 @@ data class FragmentProgress(
 )
 
 /**
+ * Результат приёма готового текста от внешнего исполнителя (MCP-поток
+ * «агент переводит сам»): Accepted — записан и подтверждён манифестом,
+ * Rejected — верификация не прошла, файлы и статусы не тронуты
+ * (фрагмент остаётся в прежнем статусе, причину возвращают агенту
+ * для самопереспроса), Error — фрагмента/черновика нет.
+ */
+sealed interface ExternalSubmitResult {
+    data class Accepted(val blocks: Int, val verify: String) : ExternalSubmitResult
+    data class Rejected(val reason: String) : ExternalSubmitResult
+    data class Error(val message: String) : ExternalSubmitResult
+}
+
+/**
  * Общая механика этапов над фрагментами: семафор параллельности, ретраи,
  * атомарные обновления манифеста, счёт блоков после каждого шага.
  */
@@ -84,6 +97,19 @@ abstract class FragmentStage(
             FragmentFile.serializer(),
             Files.readString(bookDir.resolve("work").resolve("fragments").resolve("$id.json")),
         )
+
+    /** Фрагмент манифеста с главой и телом файла; null = id в книге нет. */
+    protected data class LocatedFragment(val chapterIndex: Int, val file: FragmentFile)
+
+    protected fun locateFragment(bookDir: Path, fragmentId: String): LocatedFragment? {
+        val manifest = SplitStage.loadManifest(bookDir)
+        manifest.parts.forEach { part ->
+            if (part.fragments.any { it.id == fragmentId }) {
+                return LocatedFragment(part.chapterIndex, readFragmentFile(bookDir, fragmentId))
+            }
+        }
+        return null
+    }
 
     protected fun writeFragmentFile(bookDir: Path, file: FragmentFile) {
         ProjectStore.atomicWrite(
@@ -290,24 +316,8 @@ class DraftStage(
                 )
                 markDone(bookDir, target.fragmentId, stageName, verifyResult.summary())
 
-                // Терминолог: маркеры [[имя?: оригинал → вариант | что это]] → предложения глоссария.
-                // Модель иногда упаковывает несколько терминов в один маркер
-                // («Карла; カリル → Карл») — расщепляем на отдельные предложения
-                blocks.forEach { line ->
-                    NAME_MARKER.findAll(line).forEach { m ->
-                        ru.sebyanin.booktranslator.core.glossary.GlossaryRevision
-                            .splitPacked(m.groupValues[1].trim(), m.groupValues[2].trim())
-                            .forEach { (original, translation) ->
-                                knowledge.proposeTerm(
-                                    projectSlug,
-                                    original = original,
-                                    translation = translation,
-                                    context = "глава ${target.chapterIndex} · фрагмент ${target.fragmentId}",
-                                    reason = m.groupValues[3].trim(),
-                                )
-                            }
-                    }
-                }
+                // Терминолог: маркеры черновика → предложения глоссария
+                proposeTermsFrom(projectSlug, target.chapterIndex, target.fragmentId, blocks)
                 AppLog.info(stageName, "Фрагмент ${target.fragmentId}: готов (${blocks.size} блоков, ${result.toolCallsTotal} tool-вызовов)")
                 return true
             } catch (e: kotlinx.coroutines.CancellationException) {
@@ -323,6 +333,97 @@ class DraftStage(
         }
         markFailed(bookDir, target.fragmentId, lastError)
         return false
+    }
+
+    // ---- внешний исполнитель (MCP-поток «агент переводит сам») ----
+
+    /**
+     * Бриф для внешнего исполнителя: тот же полный текст задания, который
+     * получила бы встроенная модель. Инструменты не прилагаются — у внешнего
+     * исполнителя свои. null = фрагмент не найден.
+     */
+    suspend fun briefFor(projectSlug: String, bookSlug: String, fragmentId: String): String? {
+        val bookDir = store.bookDir(projectSlug, bookSlug)
+        val file = locateFragment(bookDir, fragmentId)?.file ?: return null
+        if (BlockText.allAnchors(file.srcBlocks)) {
+            return "ЯКОРНЫЙ ФРАГМЕНТ — перевода не требует: верни исходник дословно, строка в строку.\n<<<\n" +
+                file.srcBlocks.joinToString("\n") + "\n>>>"
+        }
+        val selected = knowledge.selectForFragment(projectSlug, file.srcBlocks.joinToString("\n"))
+        val template = promptStore.resolve(projectSlug, role)
+        return BriefBuilder.build(
+            BriefBuilder.Input(
+                template = template,
+                srcBlocks = file.srcBlocks,
+                dictionary = selected.dictionary,
+                notes = selected.notes,
+                conventions = store.readConventions(projectSlug),
+            ),
+        )
+    }
+
+    /**
+     * Приём готового черновика от внешнего исполнителя: механика этапа без LLM.
+     * Провал верификации = Rejected без единой записи (фрагмент остаётся в прежнем
+     * статусе, причина возвращается агенту для исправления и повторной отправки).
+     * Уже готовый фрагмент перезаписывает (force-семантика этапа).
+     */
+    suspend fun submitExternal(
+        projectSlug: String,
+        bookSlug: String,
+        fragmentId: String,
+        rawText: String,
+        sourceLabel: String,
+    ): ExternalSubmitResult {
+        val bookDir = store.bookDir(projectSlug, bookSlug)
+        val located = locateFragment(bookDir, fragmentId)
+            ?: return ExternalSubmitResult.Error("фрагмент не найден: $fragmentId")
+        val file = located.file
+        val blocks = parseBlocks(rawText, file.srcBlocks)
+        val verifyResult = verifyProvider(projectSlug).verifyTranslation(
+            file.srcBlocks, blocks,
+            VerifyEngine.draftOptions(),
+        )
+        if (!verifyResult.ok) {
+            AppLog.warn(stageName, "Внешний перевод $fragmentId отклонён: ${verifyResult.summary()}")
+            return ExternalSubmitResult.Rejected(verifyResult.summary())
+        }
+        writeFragmentFile(
+            bookDir,
+            file.copy(
+                draftBlocks = blocks,
+                verifyDraft = verifyResult.summary(),
+                model = sourceLabel,
+                promptTokens = 0,
+                completionTokens = 0,
+                toolCalls = 0,
+            ),
+        )
+        markDone(bookDir, fragmentId, stageName, verifyResult.summary())
+        proposeTermsFrom(projectSlug, located.chapterIndex, fragmentId, blocks)
+        AppLog.info(stageName, "Фрагмент $fragmentId: принят внешний перевод от $sourceLabel (${blocks.size} блоков)")
+        return ExternalSubmitResult.Accepted(blocks.size, verifyResult.summary())
+    }
+
+    /** Терминолог: маркеры [[имя?: оригинал → вариант | что это]] → предложения глоссария. */
+    private fun proposeTermsFrom(projectSlug: String, chapterIndex: Int, fragmentId: String, blocks: List<String>) {
+        // Модель иногда упаковывает несколько терминов в один маркер
+        // («Карла; カリル → Карл») — расщепляем на отдельные предложения
+        blocks.forEach { line ->
+            NAME_MARKER.findAll(line).forEach { m ->
+                ru.sebyanin.booktranslator.core.glossary.GlossaryRevision
+                    .splitPacked(m.groupValues[1].trim(), m.groupValues[2].trim())
+                    .forEach { (original, translation) ->
+                        knowledge.proposeTerm(
+                            projectSlug,
+                            original = original,
+                            translation = translation,
+                            context = "глава $chapterIndex · фрагмент $fragmentId",
+                            reason = m.groupValues[3].trim(),
+                        )
+                    }
+            }
+        }
     }
 
     // ---- обновления манифеста ----
@@ -546,6 +647,84 @@ class EditStage(
             it.copy(status = "failed", error = lastError.take(300), attempts = it.attempts + 1, updatedAt = LocalDateTime.now().toString())
         }
         return false
+    }
+
+    // ---- внешний исполнитель (MCP-поток «агент переводит сам») ----
+
+    /**
+     * Бриф редактору: черновик без оригинала — тот же текст задания, что у этапа.
+     * null = фрагмент не найден.
+     */
+    suspend fun briefFor(projectSlug: String, bookSlug: String, fragmentId: String): String? {
+        val bookDir = store.bookDir(projectSlug, bookSlug)
+        val file = locateFragment(bookDir, fragmentId)?.file ?: return null
+        if (file.draftBlocks.isEmpty()) {
+            return "НЕТ ЧЕРНОВИКА — сначала переведи фрагмент (stage=draft)."
+        }
+        if (BlockText.allAnchors(file.draftBlocks)) {
+            return "ЯКОРНЫЙ ФРАГМЕНТ — редактуры не требует: верни черновик дословно, строка в строку.\n<<<\n" +
+                file.draftBlocks.joinToString("\n") + "\n>>>"
+        }
+        val selected = knowledge.selectForFragment(projectSlug, file.srcBlocks.joinToString("\n"))
+        val template = promptStore.resolve(projectSlug, role)
+        return BriefBuilder.build(
+            BriefBuilder.Input(
+                template = template,
+                srcBlocks = file.draftBlocks,
+                dictionary = selected.dictionary,
+                notes = selected.notes,
+                conventions = store.readConventions(projectSlug),
+            ),
+        )
+    }
+
+    /** Приём готовой редактуры от внешнего исполнителя: механика этапа без LLM, провал verify — без записей. */
+    suspend fun submitExternal(
+        projectSlug: String,
+        bookSlug: String,
+        fragmentId: String,
+        rawText: String,
+        sourceLabel: String,
+    ): ExternalSubmitResult {
+        val bookDir = store.bookDir(projectSlug, bookSlug)
+        val located = locateFragment(bookDir, fragmentId)
+            ?: return ExternalSubmitResult.Error("фрагмент не найден: $fragmentId")
+        val file = located.file
+        if (file.draftBlocks.isEmpty()) {
+            return ExternalSubmitResult.Error("нет черновика — сначала переведи фрагмент (stage=draft)")
+        }
+        val blocks = parseBlocks(rawText, file.draftBlocks)
+        // Жёстко: блоки против исходника 1:1 (как у этапа)
+        if (blocks.size != file.srcBlocks.size) {
+            return ExternalSubmitResult.Rejected("блоков ${file.srcBlocks.size} → ${blocks.size}: нужна строка в строку с черновиком")
+        }
+        val verifyResult = verifyProvider(projectSlug).verifyTranslation(file.srcBlocks, blocks, VerifyEngine.editedOptions())
+        if (!verifyResult.ok) {
+            AppLog.warn(stageName, "Внешняя редактура $fragmentId отклонена: ${verifyResult.summary()}")
+            return ExternalSubmitResult.Rejected(verifyResult.summary())
+        }
+        writeFragmentFile(
+            bookDir,
+            file.copy(
+                editedBlocks = blocks,
+                verifyEdited = verifyResult.summary(),
+                model = sourceLabel,
+                promptTokens = 0,
+                completionTokens = 0,
+                toolCalls = 0,
+            ),
+        )
+        updateStage(bookDir, fragmentId) {
+            it.copy(
+                status = "done",
+                verify = verifyResult.summary(),
+                error = "",
+                attempts = it.attempts + 1,
+                updatedAt = LocalDateTime.now().toString(),
+            )
+        }
+        AppLog.info(stageName, "Фрагмент $fragmentId: принята внешняя редактура от $sourceLabel (${blocks.size} блоков)")
+        return ExternalSubmitResult.Accepted(blocks.size, verifyResult.summary())
     }
 
     private suspend fun updateStage(bookDir: Path, fragmentId: String, transform: (ru.sebyanin.booktranslator.core.model.StageState) -> ru.sebyanin.booktranslator.core.model.StageState) {

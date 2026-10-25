@@ -103,14 +103,15 @@ projects/<слаг>/project.json, glossary.json, notes.json, conventions.md, pro
     build/           готовые EPUB/FB2
 ```
 
-## MCP (внешнее управление, например из ZCode)
+## MCP (внешнее управление)
 
 Включается в Настройках → MCP (Streamable HTTP, `http://127.0.0.1:<port>/mcp`).
-Инструменты: `list_projects`, `list_books`, `get_book_status`, `run_stage`,
-`get_glossary`, `get_notes`, `resolve_proposals`, `search_alignment`,
-`read_chapter`, `get_critic_suggestions`, `resolve_suggestion`.
+Инструменты (17): обзор проектов/книг/статусов, запуск этапов, глоссарий и
+ревизор, конкорданс-поиск, предложения корректора и сомнения — и поток
+«агент переводит сам»: бриф фрагмента + приём перевода с верификацией,
+токены приложения не тратятся.
 
-Подключение к ZCode — см. [docs/MCP.md](docs/MCP.md).
+Подключение MCP-клиента — см. [docs/MCP.md](docs/MCP.md).
 
 ## Версии и релизы
 

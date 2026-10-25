@@ -2,6 +2,11 @@ package ru.sebyanin.booktranslator.core.mcp
 
 import ru.sebyanin.booktranslator.core.AppServices
 import ru.sebyanin.booktranslator.core.log.AppLog
+import ru.sebyanin.booktranslator.core.model.FragmentFile
+import ru.sebyanin.booktranslator.core.pipeline.ExternalSubmitResult
+import ru.sebyanin.booktranslator.core.pipeline.SplitStage
+import ru.sebyanin.booktranslator.core.storage.AppJson
+import ru.sebyanin.booktranslator.core.storage.BlockText
 import io.ktor.server.application.ApplicationCallPipeline
 import io.ktor.server.application.call
 import io.ktor.server.cio.CIO
@@ -17,20 +22,34 @@ import io.modelcontextprotocol.kotlin.sdk.server.ServerOptions
 import io.modelcontextprotocol.kotlin.sdk.server.mcpStatelessStreamableHttp
 import kotlinx.serialization.json.JsonObject
 import java.nio.file.Files
+import java.nio.file.Path
 
-/** Запуск этапа извне (реализуется UI-слоем, где живёт очередь этапов). */
+/**
+ * Запуск этапа извне (реализуется UI-слоем, где живёт очередь этапов).
+ */
 fun interface StageLauncher {
     /** stage: split|draft|edit|critic|assemble|qa|build_epub|build_fb2. Возвращает runId или ошибку. */
     fun launch(project: String, book: String, stage: String, chapters: List<Int>?): Result<String>
 }
 
 /**
- * Встроенный MCP-сервер (Streamable HTTP, localhost): внешний инструмент
- * (например, ZCode) читает состояние конвейера и запускает этапы.
+ * Уведомление UI об изменениях, сделанных MCP-инструментом мимо конвейера
+ * (критик-файлы, фрагменты, глоссарий): UI-слой поднимает свои версионные
+ * сигналы (criticVersion и пр.), чтобы открытые панели перечитали данные.
+ * book = null — мутация уровня проекта (глоссарий).
+ */
+fun interface MutationNotifier {
+    fun mutated(project: String, book: String?)
+}
+
+/**
+ * Встроенный MCP-сервер (Streamable HTTP, localhost): внешний MCP-клиент
+ * читает состояние конвейера и запускает этапы.
  */
 class McpServer(
     private val services: AppServices,
     private val stageLauncher: StageLauncher,
+    private val onMutated: MutationNotifier,
 ) {
     @Volatile private var engine: EmbeddedServer<*, *>? = null
 
@@ -79,8 +98,11 @@ class McpServer(
 
     private fun text(content: String) = CallToolResult(content = listOf(TextContent(content)))
 
+    /** Строковый аргумент: честный разбор JSON-строки (переносы/кавычки в text-параметрах выживают). */
     private fun argString(args: JsonObject?, key: String): String? =
-        args?.get(key)?.toString()?.trim('"')
+        (args?.get(key) as? kotlinx.serialization.json.JsonPrimitive)
+            ?.takeIf { it.isString }
+            ?.content
 
     private fun argInts(args: JsonObject?, key: String): List<Int>? =
         args?.get(key)?.let { el ->
@@ -88,6 +110,14 @@ class McpServer(
                 el.toString().trim('[', ']').split(',').mapNotNull { it.trim().toIntOrNull() }.filter { it > 0 }
             }.getOrNull()?.takeIf { it.isNotEmpty() }
         }
+
+    /** Файл фрагмента или null (нет файла/битый) — для чтения без выбросов. */
+    private fun readFragmentOrNull(bookDir: Path, id: String): FragmentFile? = runCatching {
+        AppJson.decodeFromString(
+            FragmentFile.serializer(),
+            Files.readString(bookDir.resolve("work").resolve("fragments").resolve("$id.json")),
+        )
+    }.getOrNull()
 
     private fun registerTools(server: Server) {
         with(server) {
@@ -122,7 +152,7 @@ class McpServer(
                 val p = argString(it.params.arguments, "project") ?: return@addTool text("нет project")
                 val b = argString(it.params.arguments, "book") ?: return@addTool text("нет book")
                 val bookDir = services.projectStore.bookDir(p, b)
-                val manifest = runCatching { ru.sebyanin.booktranslator.core.pipeline.SplitStage.loadManifest(bookDir) }.getOrNull()
+                val manifest = runCatching { SplitStage.loadManifest(bookDir) }.getOrNull()
                     ?: return@addTool text("книга не нарезана")
                 val frags = manifest.allFragments()
                 val sb = StringBuilder()
@@ -145,6 +175,75 @@ class McpServer(
                     onSuccess = { id -> text("запущено: $id") },
                     onFailure = { e -> text("не запущено: ${e.message}") },
                 )
+            }
+
+            addTool(
+                name = "list_fragments",
+                description = "Очередь работы для внешнего исполнителя: не завершённые фрагменты (pending/failed/running). stage: draft|edit, опционально chapter.",
+            ) {
+                val p = argString(it.params.arguments, "project") ?: return@addTool text("нет project")
+                val b = argString(it.params.arguments, "book") ?: return@addTool text("нет book")
+                val stage = argString(it.params.arguments, "stage") ?: "draft"
+                if (stage != "draft" && stage != "edit") return@addTool text("stage должен быть draft|edit")
+                val chapter = argString(it.params.arguments, "chapter")?.toIntOrNull()
+                val bookDir = services.projectStore.bookDir(p, b)
+                val manifest = runCatching { SplitStage.loadManifest(bookDir) }.getOrNull()
+                    ?: return@addTool text("книга не нарезана")
+                val lines = manifest.parts.asSequence()
+                    .filter { chapter == null || it.chapterIndex == chapter }
+                    .flatMap { part -> part.fragments.map { part.chapterIndex to it } }
+                    .filter { (_, f) -> !(if (stage == "draft") f.draft else f.edited).isDone }
+                    .map { (ch, f) ->
+                        val state = if (stage == "draft") f.draft else f.edited
+                        val anchor = readFragmentOrNull(bookDir, f.id)?.let { file ->
+                            BlockText.allAnchors(if (stage == "draft") file.srcBlocks else file.draftBlocks)
+                        } == true
+                        "${f.id} | глава $ch | блоков ${f.srcBlockCount} | ${state.status}" +
+                            if (anchor) " | якорный (верни дословно)" else ""
+                    }
+                    .toList()
+                text(if (lines.isEmpty()) "готово — незавершённых фрагментов нет" else lines.joinToString("\n"))
+            }
+
+            addTool(
+                name = "get_fragment_brief",
+                description = "Бриф фрагмента для внешнего исполнителя: полный текст задания (словарь, заметки, конвенции, исходник) — тот же, что получает встроенная модель. stage: draft|edit.",
+            ) {
+                val p = argString(it.params.arguments, "project") ?: return@addTool text("нет project")
+                val b = argString(it.params.arguments, "book") ?: return@addTool text("нет book")
+                val fragment = argString(it.params.arguments, "fragment") ?: return@addTool text("нет fragment")
+                val stage = argString(it.params.arguments, "stage") ?: "draft"
+                val brief = when (stage) {
+                    "draft" -> services.draftStage.briefFor(p, b, fragment)
+                    "edit" -> services.editStage.briefFor(p, b, fragment)
+                    else -> return@addTool text("stage должен быть draft|edit")
+                } ?: return@addTool text("фрагмент не найден: $fragment")
+                text(brief)
+            }
+
+            addTool(
+                name = "submit_translation",
+                description = "Принять готовый текст фрагмента от внешнего исполнителя: верификация, запись, статус done (готовый фрагмент перезаписывает). stage: draft|edit; text — перевод/редактура; source — кто перевёл (для журнала). Отказ = причина верификации, исправь и пришли снова.",
+            ) {
+                val p = argString(it.params.arguments, "project") ?: return@addTool text("нет project")
+                val b = argString(it.params.arguments, "book") ?: return@addTool text("нет book")
+                val fragment = argString(it.params.arguments, "fragment") ?: return@addTool text("нет fragment")
+                val stage = argString(it.params.arguments, "stage") ?: "draft"
+                val raw = argString(it.params.arguments, "text") ?: return@addTool text("нет text")
+                val source = argString(it.params.arguments, "source") ?: "external"
+                val result = when (stage) {
+                    "draft" -> services.draftStage.submitExternal(p, b, fragment, raw, source)
+                    "edit" -> services.editStage.submitExternal(p, b, fragment, raw, source)
+                    else -> return@addTool text("stage должен быть draft|edit")
+                }
+                when (result) {
+                    is ExternalSubmitResult.Accepted -> {
+                        onMutated.mutated(p, b)
+                        text("принято: $fragment (${result.blocks} блоков; ${result.verify})")
+                    }
+                    is ExternalSubmitResult.Rejected -> text("не принято: ${result.reason} — исправь и пришли снова")
+                    is ExternalSubmitResult.Error -> text(result.message)
+                }
             }
 
             addTool(
@@ -185,10 +284,12 @@ class McpServer(
                 when (action) {
                     "approve" -> {
                         services.knowledge.approveTerm(p, original, translation ?: "")
+                        onMutated.mutated(p, null)
                         text("утверждено: $original")
                     }
                     "reject" -> {
                         services.knowledge.rejectTerm(p, original)
+                        onMutated.mutated(p, null)
                         text("отклонено: $original")
                     }
                     else -> text("action должен быть approve|reject")
@@ -307,10 +408,16 @@ class McpServer(
                 val note = argString(it.params.arguments, "note") ?: ""
                 if (id.startsWith("t")) {
                     val err = services.suggestionService.removeTranslatorMarker(p, b, id)
-                    if (err == null) text("пометка убрана: $id") else text(err)
+                    if (err == null) {
+                        onMutated.mutated(p, b)
+                        text("пометка убрана: $id")
+                    } else text(err)
                 } else {
                     val updated = services.suggestionService.resolveDoubt(p, b, id, note)
-                    if (updated == null) text("сомнение не найдено") else text("разобрано: $id")
+                    if (updated == null) text("сомнение не найдено") else {
+                        onMutated.mutated(p, b)
+                        text("разобрано: $id")
+                    }
                 }
             }
 
@@ -333,11 +440,15 @@ class McpServer(
                             p, b, suggestion, services.verifyFor(p),
                         )
                     ) {
-                        is ru.sebyanin.booktranslator.core.glossary.SuggestionService.ApplyOutcome.Applied -> text("применено: $id")
+                        is ru.sebyanin.booktranslator.core.glossary.SuggestionService.ApplyOutcome.Applied -> {
+                            onMutated.mutated(p, b)
+                            text("применено: $id")
+                        }
                         is ru.sebyanin.booktranslator.core.glossary.SuggestionService.ApplyOutcome.Failed -> text("не применено: ${outcome.reason}")
                     }
                     "reject" -> {
                         services.suggestionService.reject(p, b, id)
+                        onMutated.mutated(p, b)
                         text("отклонено: $id")
                     }
                     else -> text("action должен быть apply|reject")
@@ -350,6 +461,7 @@ class McpServer(
         /** Для теста/экспорта списка инструментов. */
         fun toolNames(): List<String> = listOf(
             "list_projects", "list_books", "get_book_status", "run_stage",
+            "list_fragments", "get_fragment_brief", "submit_translation",
             "get_glossary", "get_notes", "resolve_proposals", "search_alignment",
             "read_chapter", "get_critic_suggestions", "resolve_suggestion", "resolve_doubt",
             "run_glossary_revisor", "get_glossary_revision",

@@ -621,6 +621,17 @@ class AppState(val services: AppServices, private val scope: CoroutineScope) {
         }
     }
 
+    /**
+     * MCP-инструмент изменил файлы мимо конвейера (критик, фрагменты, глоссарий):
+     * открытой книге нужен полный refreshBook (манифест + criticVersion),
+     * остальным книгам проекта — глоссарий (он общий на проект).
+     */
+    fun externalMutated(project: String, book: String?) {
+        val p = currentProject.value ?: return
+        if (p.slug != project) return
+        if (book != null && currentBook.value?.slug == book) refreshBook() else refreshKnowledge()
+    }
+
     // ---------- знания ----------
 
     fun approveTerm(entry: GlossaryEntry, translation: String) {
